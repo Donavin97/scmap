@@ -134,7 +134,7 @@ EVENT_TYPE_GROUPS = {
     'Other / Unknown':         ('.', None),
 }
 
-DEPTH_CMAP = plt.cm.viridis_r
+DEPTH_CMAP = plt.cm.inferno_r   # perceptually uniform, CVD-safe: warm(shallow)→cool(deep)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -147,13 +147,19 @@ def depth_color(depth_km, vmin=0, vmax=200):
 
 
 def mag_to_size(magnitude, min_mag=0, max_mag=9, min_size=20, max_size=500):
+    """Map magnitude to marker area — area ∝ 10^M for readability.
+
+    Energy scaling (10^1.5M) creates markers too large for large events.
+    The area-based scaling (10^M) keeps the range manageable while
+    preserving the relative visual weight between magnitudes.
+    """
     if magnitude is None:
         return min_size
     mag_clipped = max(min_mag, min(max_mag, magnitude))
-    energy_scale = 10 ** (1.5 * mag_clipped)
-    energy_min = 10 ** (1.5 * min_mag)
-    energy_max = 10 ** (1.5 * max_mag)
-    frac = (energy_scale - energy_min) / max(1, energy_max - energy_min)
+    scale = 10 ** mag_clipped
+    scale_min = 10 ** min_mag
+    scale_max = 10 ** max_mag
+    frac = (scale - scale_min) / max(1, scale_max - scale_min)
     return min_size + frac * (max_size - min_size)
 
 
@@ -659,11 +665,8 @@ class SeismoAnalysis:
     # ── b-value (Aki-Utsu MLE) ─────────────────────────────────────────
 
     def bvalue_map(self, mc_hint=1.5):
-        """Maximum-likelihood b-value on a grid.
-
-        b = log10(e) / (M̄ − Mc)   for M ≥ Mc
-        Uses the given *mc_hint* as a fixed completeness threshold.
-        """
+        """Maximum-likelihood b-value on a grid."""
+        seiscomp.logging.debug("      computing b-value (Mc ≥ %.1f) ..." % mc_hint)
         lons, lats = self._grid_coords()
         nlons, nlats = len(lons), len(lats)
         values = np.full((nlats, nlons), np.nan)
@@ -676,16 +679,16 @@ class SeismoAnalysis:
                 if len(mags) >= min_events:
                     values[j, i] = math.log10(math.e) / (mags.mean() - mc_hint)
 
+        valid = np.isfinite(values).sum()
+        seiscomp.logging.debug("      → %d / %d cells have b-values"
+                               % (valid, values.size))
         return lons, lats, values
 
     # ── Magnitude completeness (MAXC) ───────────────────────────────────
 
     def mc_map(self):
-        """Maximum-curvature Mc on a grid.
-
-        Finds the magnitude bin with the highest event count,
-        returns that magnitude + 0.2 as the Mc estimate.
-        """
+        """Maximum-curvature Mc on a grid."""
+        seiscomp.logging.debug("      computing Mc (MAXC) ...")
         lons, lats = self._grid_coords()
         nlons, nlats = len(lons), len(lats)
         values = np.full((nlats, nlons), np.nan)
@@ -708,12 +711,16 @@ class SeismoAnalysis:
                 idx = np.argmax(hist)
                 values[j, i] = (edges[idx] + edges[idx + 1]) / 2 + 0.2
 
+        valid = np.isfinite(values).sum()
+        seiscomp.logging.debug("      → %d / %d cells have Mc values"
+                               % (valid, values.size))
         return lons, lats, values
 
     # ── Seismicity rate ─────────────────────────────────────────────────
 
     def rate_map(self):
         """Annual seismicity rate per km² above Mc=1.5 on a grid."""
+        seiscomp.logging.debug("      computing rate ...")
         lons, lats = self._grid_coords()
         nlons, nlats = len(lons), len(lats)
         values = np.full((nlats, nlons), np.nan)
@@ -727,6 +734,7 @@ class SeismoAnalysis:
         else:
             tspan = seiscomp.core.TimeSpan(max(etimes) - min(etimes))
             years = max(1.0, tspan.seconds() / 31557600.0)
+        seiscomp.logging.debug("      → catalogue span: %.2f yr" % years)
 
         area_km2 = math.pi * self.radius_km ** 2
 
@@ -737,6 +745,9 @@ class SeismoAnalysis:
                 if len(mags) >= 5:
                     values[j, i] = len(mags) / (area_km2 * years)
 
+        valid = np.isfinite(values).sum()
+        seiscomp.logging.debug("      → %d / %d cells have rate values"
+                               % (valid, values.size))
         return lons, lats, values
 
 
@@ -754,11 +765,32 @@ class MapBuilder:
 
     def build(self, output_path):
         config = self.config
-        lon_min, lon_max, lat_min, lat_max = self._compute_extent()
-
+        mode = config.get('mode', 'events')
         dpi = config.get('dpi', 150)
         dims = config['dimension']
         figsize = (dims[0] / dpi, dims[1] / dpi)
+        margin = config.get('margin', 3.0)
+        region = config.get('region')
+
+        seiscomp.logging.debug("── map build start ──────────────────────────────")
+        seiscomp.logging.debug("  mode        : %s" % mode)
+        seiscomp.logging.debug("  output      : %s" % output_path)
+        seiscomp.logging.debug("  dimension   : %dx%d px @ %d dpi  →  %.1f×%.1f in"
+                               % (dims[0], dims[1], dpi, figsize[0], figsize[1]))
+        if region:
+            seiscomp.logging.debug("  region      : %s" % region)
+        else:
+            clat = config.get('lat', 'auto')
+            clon = config.get('lon', 'auto')
+            seiscomp.logging.debug("  center      : lat=%s lon=%s" % (clat, clon))
+            seiscomp.logging.debug("  margin      : %.2f°" % margin)
+        seiscomp.logging.debug("  n events    : %d" % len(self.events))
+
+        lon_min, lon_max, lat_min, lat_max = self._compute_extent()
+        seiscomp.logging.debug("  extent lon  : [%.4f, %.4f]  span=%.2f°"
+                               % (lon_min, lon_max, lon_max - lon_min))
+        seiscomp.logging.debug("  extent lat  : [%.4f, %.4f]  span=%.2f°"
+                               % (lat_min, lat_max, lat_max - lat_min))
 
         fig = plt.figure(figsize=figsize, dpi=dpi, facecolor='white')
 
@@ -766,35 +798,54 @@ class MapBuilder:
         ax = fig.add_subplot(1, 1, 1, projection=proj)
         ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=proj)
 
+        seiscomp.logging.debug("  basemap     : drawing ...")
         self._draw_basemap(ax)
 
-        mode = config.get('mode', 'events')
         if mode == 'events':
+            seiscomp.logging.debug("  grid        : drawing ...")
             self._draw_grid(ax)
+            seiscomp.logging.debug("  events      : drawing (%d events) ..." % len(self.events))
             self._draw_events(ax, proj)
             if config.get('show_stations', True):
+                seiscomp.logging.debug("  stations    : drawing ...")
                 self._draw_stations(ax, proj)
             if config.get('show_beachballs', True):
+                seiscomp.logging.debug("  beachballs  : drawing ...")
                 self._draw_beachballs(ax, proj)
         else:
+            grid_sz = config.get('grid_size', 0.5)
+            grid_r  = config.get('grid_radius', 50)
+            seiscomp.logging.debug("  analysis    : mode=%s grid=%.2f° r=%d km"
+                                   % (mode, grid_sz, grid_r))
             self._draw_analysis_layer(ax, proj, lon_min, lon_max,
                                       lat_min, lat_max, mode)
+            seiscomp.logging.debug("  grid        : drawing ...")
             self._draw_grid(ax)
 
         if config.get('show_cities', True):
+            min_pop = config.get('min_city_population', 100000)
+            seiscomp.logging.debug("  cities      : drawing (min pop ≥ %d) ..." % min_pop)
             self._draw_cities(ax, proj, lon_min, lon_max, lat_min, lat_max)
+
+        seiscomp.logging.debug("  scale bar   : drawing ...")
         self._draw_scale_bar(ax, proj, lon_min, lat_min)
+        seiscomp.logging.debug("  north arrow : drawing ...")
         self._draw_north_arrow(ax, proj)
 
         if config.get('show_legend', True):
+            seiscomp.logging.debug("  legend      : drawing ...")
             self._draw_legend(fig, ax)
 
+        seiscomp.logging.debug("  title       : drawing ...")
         self._draw_title(ax)
+        seiscomp.logging.debug("  timestamp   : drawing ...")
         self._draw_timestamp(fig)
 
         if config.get('show_inset', True):
+            seiscomp.logging.debug("  inset map   : drawing ...")
             self._draw_inset(fig, lon_min, lon_max, lat_min, lat_max)
 
+        seiscomp.logging.debug("  render      : saving to %s ..." % output_path)
         fig.savefig(output_path, dpi=dpi, bbox_inches='tight',
                     facecolor='white', edgecolor='none', pad_inches=0.2)
         plt.close(fig)
@@ -804,7 +855,10 @@ class MapBuilder:
     def _compute_extent(self):
         config = self.config
         if config.get('region'):
-            return _parse_region(config['region'])
+            extent = _parse_region(config['region'])
+            seiscomp.logging.debug("  extent src  : explicit region → "
+                                   "lon=[%.4f,%.4f] lat=[%.4f,%.4f]" % extent)
+            return extent
 
         margin = config.get('margin', 3.0)
         center_lat = config.get('lat')
@@ -815,10 +869,13 @@ class MapBuilder:
             if valid:
                 center_lat = valid[0].latitude
                 center_lon = valid[0].longitude
+                seiscomp.logging.debug("  extent src  : first event (%.4f, %.4f)"
+                                       % (center_lat, center_lon))
 
         if center_lat is None:
             center_lat, center_lon = 0, 0
             margin = 90
+            seiscomp.logging.debug("  extent src  : fallback (0,0) margin=90°")
 
         dlat = dlon = margin
         dims = config['dimension']
@@ -830,46 +887,51 @@ class MapBuilder:
 
     def _draw_basemap(self, ax):
         cfg = self.config
+        # Low-saturation land & ocean allow event markers to dominate
+        # visually — Tufte "data-ink ratio" principle.
         ax.add_feature(cfeature.OCEAN.with_scale('50m'),
-                       facecolor=cfg.get('ocean_color', '#e8f0f8'), zorder=1)
+                       facecolor=cfg.get('ocean_color', '#DCE4EC'), zorder=1)
         ax.add_feature(cfeature.LAND.with_scale('50m'),
-                       facecolor=cfg.get('land_color', '#f5f3e8'), zorder=2)
+                       facecolor=cfg.get('land_color', '#F2EFE9'), zorder=2)
         ax.add_feature(cfeature.COASTLINE.with_scale('50m'),
-                       edgecolor=cfg.get('coast_color', '#666666'),
-                       linewidth=0.6, zorder=3)
+                       edgecolor=cfg.get('coast_color', '#555555'),
+                       linewidth=0.3, zorder=3)
         if cfg.get('show_borders', True):
             ax.add_feature(cfeature.BORDERS.with_scale('50m'),
-                           edgecolor=cfg.get('border_color', '#aaaaaa'),
-                           linewidth=0.35, linestyle='-', zorder=3)
+                           edgecolor=cfg.get('border_color', '#AAAAAA'),
+                           linewidth=0.2, linestyle='-', zorder=3)
         if cfg.get('show_states', False):
             ax.add_feature(cfeature.STATES.with_scale('50m'),
-                           edgecolor=cfg.get('state_color', '#cccccc'),
-                           linewidth=0.2, linestyle=':', zorder=3)
+                           edgecolor=cfg.get('state_color', '#CCCCCC'),
+                           linewidth=0.15, linestyle=':', zorder=3)
         ax.add_feature(cfeature.LAKES.with_scale('50m'),
-                       facecolor=cfg.get('ocean_color', '#e8f0f8'),
-                       edgecolor='#888888', linewidth=0.25, zorder=3)
+                       facecolor=cfg.get('ocean_color', '#DCE4EC'),
+                       edgecolor='#777777', linewidth=0.2, zorder=3)
         if cfg.get('show_rivers', False):
             ax.add_feature(cfeature.RIVERS.with_scale('50m'),
-                           edgecolor='#88aacc', linewidth=0.25, zorder=3)
+                           edgecolor='#88AACC', linewidth=0.2, zorder=3)
 
     def _draw_grid(self, ax):
         cfg = self.config
         gl = ax.gridlines(draw_labels=True, dms=False,
                           x_inline=False, y_inline=False,
-                          linewidth=0.25, color='#cccccc', alpha=0.7, zorder=4)
+                          linewidth=0.15, color='#CCCCCC', alpha=0.6, zorder=4)
         gl.top_labels = False
         gl.right_labels = False
-        gl.xlabel_style = {'size': 6.5, 'color': '#555555'}
-        gl.ylabel_style = {'size': 6.5, 'color': '#555555'}
+        gl.xlabel_style = {'size': 7, 'color': '#444444'}
+        gl.ylabel_style = {'size': 7, 'color': '#444444'}
         gl.xlocator = MaxNLocator(nbins=cfg.get('grid_x', 8))
         gl.ylocator = MaxNLocator(nbins=cfg.get('grid_y', 6))
 
     def _draw_events(self, ax, proj):
         cfg = self.config
         self._plotted_type_groups = set()
+        n_plotted = 0
+        n_skipped = 0
 
         for se in self.events:
             if se.latitude is None or se.longitude is None:
+                n_skipped += 1
                 continue
 
             info = EVENT_TYPE_CONFIG.get(se.event_type, ('.', 'Unknown', None))
@@ -887,13 +949,13 @@ class MapBuilder:
                                min_size=cfg.get('min_marker_size', 20),
                                max_size=cfg.get('max_marker_size', 450))
 
-            edge_lw = 0.5 if marker not in ('*',) else 0.8
+            edge_lw = 0.35 if marker not in ('*',) else 0.6
             ax.plot(se.longitude, se.latitude,
                     marker=marker, markersize=math.sqrt(size) / 2.0,
                     markerfacecolor=face_color if marker != '*' else 'none',
                     markeredgecolor=cfg.get('marker_edge', '#333333'),
                     markeredgewidth=edge_lw,
-                    alpha=cfg.get('marker_alpha', 0.9),
+                    alpha=cfg.get('marker_alpha', 0.92),
                     linestyle='none', transform=proj, zorder=7,
                     clip_on=True)
 
@@ -901,14 +963,18 @@ class MapBuilder:
                 label = f'M{mag:.1f}'
                 ax.annotate(label, (se.longitude, se.latitude),
                             textcoords='offset points',
-                            xytext=(4, 4), fontsize=5.5, color='#333333',
-                            alpha=0.85, zorder=8, clip_on=True,
-                            bbox=dict(boxstyle='round,pad=0.1',
-                                      facecolor='white', alpha=0.6, lw=0))
+                            xytext=(3, 3), fontsize=5, color='#555555',
+                            alpha=0.75, zorder=8, clip_on=True,
+                            bbox=dict(boxstyle='round,pad=0.08',
+                                      facecolor='white', alpha=0.55, lw=0))
 
             group_name = _group_name_for_type(se.event_type)
             if group_name:
                 self._plotted_type_groups.add(group_name)
+            n_plotted += 1
+
+        seiscomp.logging.debug("    → plotted %d markers, %d skipped (no coords)"
+                               % (n_plotted, n_skipped))
 
     def _draw_analysis_layer(self, ax, proj, lon_min, lon_max,
                              lat_min, lat_max, mode):
@@ -951,7 +1017,12 @@ class MapBuilder:
 
         # Mask NaN and add a small epsilon to avoid all-NaN warnings
         masked = np.ma.masked_invalid(vals)
-        if masked.count() == 0:
+        n_cells = masked.count()
+        total_cells = vals.size
+        seiscomp.logging.debug("    → grid: %d×%d cells, %d filled (%.0f%%)"
+                               % (len(lons), len(lats), n_cells,
+                                  100.0 * n_cells / max(1, total_cells)))
+        if n_cells == 0:
             seiscomp.logging.warning(
                 "Analysis produced only NaN values — "
                 "too few events or grid too sparse.")
@@ -961,6 +1032,8 @@ class MapBuilder:
             vmin = float(np.nanmin(vals))
         if vmax is None:
             vmax = float(np.nanmax(vals))
+        seiscomp.logging.debug("    → range: [%.3f, %.3f]  cmap: %s"
+                               % (vmin, vmax, cmap.name))
 
         pcm = ax.pcolormesh(lon_mesh, lat_mesh, vals,
                             cmap=cmap, vmin=vmin, vmax=vmax,
@@ -1007,55 +1080,117 @@ class MapBuilder:
                         all_stations[key] = (slat, slon)
 
         if not all_stations:
+            seiscomp.logging.debug("    → none (no arrival data)")
             return
 
         lons = [s[1] for s in all_stations.values()]
         lats = [s[0] for s in all_stations.values()]
+        seiscomp.logging.debug("    → %d unique stations from arrivals"
+                               % len(all_stations))
         ax.plot(lons, lats, 'v', markersize=4, color='#444444',
                 markerfacecolor='#ffffff', markeredgewidth=0.5,
                 linestyle='none', transform=proj, zorder=6,
                 label='_stations', alpha=0.8)
 
     def _draw_cities(self, ax, proj, lon_min, lon_max, lat_min, lat_max):
+        """Draw city labels with density-aware collision avoidance.
+
+        Margins are computed from three components:
+          1.  Text width in degrees  — estimated from font size, name length,
+              figure dimensions, and map extent (dominant factor).
+          2.  Density multiplier  — grows when many candidate cities exist,
+              shrinking the effective spacing per label.
+          3.  User factor  — controlled by --city-spacing (default 1.0).
+        """
         cfg = self.config
         min_pop = cfg.get('min_city_population', 100000)
+        spacing = cfg.get('city_spacing', 1.0)
 
         cities = list(load_cities(lon_min, lon_max, lat_min, lat_max, min_pop))
         if not cities:
+            seiscomp.logging.debug("    → none found in extent")
             return
 
         cities.sort(key=lambda c: (not c[4], -c[3]))
 
+        # ── estimated text height in degrees ──────────────────────────
+        dims = cfg['dimension']
+        lat_span = lat_max - lat_min
+        lon_span = lon_max - lon_min
+
+        # Average character width in degrees for 6 pt text on this canvas.
+        # At 150 dpi, 6 pt ≈ 12.5 px per char. Map width ≈ dims[0] px
+        # → 1 char ≈ 12.5 / dims[0] * lon_span degrees.
+        # Add a fudge factor because small caps and descenders increase
+        # the effective bounding box.
+        px_per_char = 15.0
+        char_deg_lon = px_per_char / dims[0] * lon_span * 1.4
+        char_deg_lat = px_per_char / dims[1] * lat_span * 2.0  # line-height
+
+        # ── density factor ────────────────────────────────────────────
+        # More candidates → larger effective margin to thin them out.
+        map_area_deg2 = lat_span * lon_span
+        density = len(cities) / max(0.1, map_area_deg2)
+        # Clamp: 1× for sparse maps, up to 4× for very dense ones.
+        density_mult = max(1.0, min(4.0, density / 3.0))
+
+        n_capitals = 0
+        n_placed = 0
         placed = []
+
         for name, lat, lon, pop, is_capital in cities:
+            if is_capital:
+                fs = 8.0
+            else:
+                fs = 6.0
+
+            # Text extent in degrees (approximate)
+            text_w_deg = len(name) * char_deg_lon * (fs / 6.0) * spacing
+            text_h_deg = char_deg_lat * (fs / 6.0) * spacing
+
+            # Minimum margin for this label (guards against zero)
+            min_lat_margin = text_h_deg * 1.8 * density_mult
+            min_lon_margin = text_w_deg * 1.3 * density_mult
+
             too_close = False
             for px, py in placed:
-                if abs(lat - py) < 0.08 and abs(lon - px) < 0.12:
+                if (abs(lat - py) < min_lat_margin and
+                        abs(lon - px) < min_lon_margin):
                     too_close = True
                     break
             if too_close:
                 continue
 
             placed.append((lon, lat))
+            n_placed += 1
 
             if is_capital:
-                fontsize = 8.0
                 color = '#222222'
                 fontweight = 'bold'
+                n_capitals += 1
                 ax.plot(lon, lat, 's', markersize=3.5, color='#cc3333',
                         markerfacecolor='#cc3333', transform=proj,
                         zorder=8, clip_on=True)
             else:
-                fontsize = 6.0
                 color = '#444444'
                 fontweight = 'normal'
 
             ax.annotate(name, (lon, lat),
                         textcoords='offset points',
-                        xytext=(3, -2), fontsize=fontsize,
+                        xytext=(3, -2), fontsize=fs,
                         color=color, fontweight=fontweight,
                         ha='left', va='top',
                         alpha=0.85, zorder=9, clip_on=True)
+
+        margins_lat = min_lat_margin if placed else 0
+        margins_lon = min_lon_margin if placed else 0
+        seiscomp.logging.debug(
+            "    → placed %d labels (%d capitals), %d skipped "
+            "(overlap or low pop) | margins: %.4f°×%.4f° | "
+            "spacing=%.1f density=%.1f×"
+            % (n_placed, n_capitals, len(cities) - n_placed,
+               margins_lat, margins_lon,
+               spacing, density_mult))
 
     def _draw_beachballs(self, ax, proj):
         if not HAS_OBSPY_BEACH:
@@ -1081,21 +1216,23 @@ class MapBuilder:
                 pass
 
     def _draw_north_arrow(self, ax, proj):
-        x_frac, y_frac = 0.92, 0.90
-        arrow_len = 0.04
+        """Subtle north arrow, top-right of the data area."""
+        x_frac, y_frac = 0.93, 0.91
+        arrow_len = 0.035
 
         ax.annotate('', xy=(x_frac, y_frac + arrow_len),
                     xytext=(x_frac, y_frac),
                     xycoords='axes fraction',
                     textcoords='axes fraction',
-                    arrowprops=dict(arrowstyle='->', lw=1.5,
-                                    color='#333333', shrinkB=0),
+                    arrowprops=dict(arrowstyle='->', lw=1.2,
+                                    color='#444444', shrinkB=0),
                     zorder=30)
-        ax.text(x_frac, y_frac + arrow_len + 0.01, 'N',
-                transform=ax.transAxes, fontsize=9, fontweight='bold',
-                color='#333333', ha='center', va='bottom', zorder=30)
+        ax.text(x_frac, y_frac + arrow_len + 0.008, 'N',
+                transform=ax.transAxes, fontsize=8, fontweight='bold',
+                color='#444444', ha='center', va='bottom', zorder=30)
 
     def _draw_scale_bar(self, ax, proj, lon_min, lat_min):
+        """Segmented scale bar with alternating fills, bottom-left."""
         extent = ax.get_extent(proj)
         lon_span = extent[1] - extent[0]
         lat_span = extent[3] - extent[2]
@@ -1107,9 +1244,9 @@ class MapBuilder:
         bar_km = min(nice, key=lambda x: abs(x - total_km / 4))
         bar_deg = bar_km / km_per_deg
 
-        bar_x = extent[0] + 0.04 * lon_span
-        bar_y = extent[2] + 0.04 * lat_span
-        bar_h = 0.006 * lat_span
+        bar_x = extent[0] + 0.03 * lon_span
+        bar_y = extent[2] + 0.03 * lat_span
+        bar_h = 0.005 * lat_span
 
         n_segments = 4
         seg_deg = bar_deg / n_segments
@@ -1117,31 +1254,31 @@ class MapBuilder:
         from matplotlib.patches import Rectangle
         for i in range(n_segments):
             x0 = bar_x + i * seg_deg
-            fc = 'black' if i % 2 == 0 else 'white'
-            ec = 'black'
+            fc = '#333333' if i % 2 == 0 else 'white'
+            ec = '#333333'
             rect = Rectangle((x0, bar_y), seg_deg, bar_h,
-                             facecolor=fc, edgecolor=ec, linewidth=0.4,
+                             facecolor=fc, edgecolor=ec, linewidth=0.3,
                              transform=proj, zorder=20, clip_on=False)
             ax.add_patch(rect)
 
         if bar_km >= 1000:
-            label = f'{bar_km / 1000:.0f} km' if bar_km % 1000 == 0 else f'{bar_km / 1000:.1f} km'
+            label = ('%d km' % (bar_km // 1000) if bar_km % 1000 == 0
+                     else '%.1f km' % (bar_km / 1000))
         else:
-            label = f'{bar_km:.0f} km'
-        ax.text(bar_x + bar_deg / 2, bar_y - 0.012 * lat_span, label,
+            label = '%d km' % bar_km
+        ax.text(bar_x + bar_deg / 2, bar_y - 0.010 * lat_span, label,
                 transform=proj, ha='center', va='top',
-                fontsize=7, color='black', zorder=20, fontweight='bold')
+                fontsize=6.5, color='#333333', zorder=20)
 
     def _draw_legend(self, fig, ax):
         cfg = self.config
         mode = cfg.get('mode', 'events')
 
         if mode != 'events':
-            # Analysis mode: show parameter block as a text box
             if self._analysis_params:
                 text = '\n'.join(self._analysis_params)
                 ax.text(0.01, 0.36, text, transform=ax.transAxes,
-                        fontsize=6.5, color='#222222',
+                        fontsize=7, color='#222222',
                         fontfamily='monospace',
                         va='top', ha='left',
                         bbox=dict(boxstyle='round,pad=0.3',
@@ -1149,8 +1286,35 @@ class MapBuilder:
                         zorder=30)
             return
 
+        # ── event-type legend (only types present) ────────────────────
+        legend_handles = []
+        for group_name in sorted(self._plotted_type_groups):
+            info = EVENT_TYPE_GROUPS.get(group_name, ('.', None))
+            marker, color_override = info
+            fc = color_override or '#666666'
+            legend_handles.append(
+                Line2D([0], [0], marker=marker, color='w',
+                       markerfacecolor=fc if marker != '*' else 'none',
+                       markeredgecolor='#333333',
+                       markeredgewidth=0.4, markersize=6,
+                       label=group_name))
+
+        if legend_handles:
+            leg1 = ax.legend(handles=legend_handles,
+                             title='Event type',
+                             loc='upper left',
+                             fontsize=6, title_fontsize=7,
+                             framealpha=0.85,
+                             borderpad=0.3,
+                             labelspacing=0.15,
+                             handletextpad=0.3)
+            leg1.get_frame().set_linewidth(0.4)
+            ax.add_artist(leg1)
+
+        # ── reference magnitude circles ────────────────────────────────
+        ref_mags = [2, 4, 6, 8]
         mag_handles = []
-        for mag in [2, 4, 6, 8]:
+        for mag in ref_mags:
             size = mag_to_size(mag,
                                min_mag=cfg.get('min_mag', 0),
                                max_mag=cfg.get('max_mag', 8),
@@ -1161,29 +1325,31 @@ class MapBuilder:
                 Line2D([0], [0], marker='o', color='w',
                        markerfacecolor='#888888',
                        markeredgecolor='#333333',
-                       markeredgewidth=0.4,
-                       markersize=ms, label=f'M{mag}'))
+                       markeredgewidth=0.35,
+                       markersize=ms, label=f'M\u2009{mag}'))
 
         leg2 = ax.legend(handles=mag_handles,
                          title='Magnitude',
                          loc='lower left',
-                         fontsize=6, title_fontsize=7,
+                         fontsize=5.5, title_fontsize=6.5,
                          framealpha=0.85,
-                         borderpad=0.4,
-                         labelspacing=0.15,
+                         borderpad=0.3,
+                         labelspacing=0.1,
                          ncol=4,
-                         columnspacing=0.4)
-        leg2.get_frame().set_linewidth(0.5)
+                         columnspacing=0.3,
+                         handletextpad=0.2)
+        leg2.get_frame().set_linewidth(0.4)
 
-        cax = fig.add_axes([0.18, 0.07, 0.64, 0.012])
+        # ── depth colour bar ───────────────────────────────────────────
+        cax = fig.add_axes([0.18, 0.07, 0.64, 0.010])
         sm = plt.cm.ScalarMappable(
             cmap=DEPTH_CMAP,
             norm=plt.Normalize(0, cfg.get('depth_max', 200)))
         sm.set_array([])
         cb = fig.colorbar(sm, cax=cax, orientation='horizontal')
-        cb.set_label('Depth (km)', fontsize=7.5)
-        cb.ax.tick_params(labelsize=6.5)
-        cb.outline.set_linewidth(0.4)
+        cb.set_label('Depth  (km)', fontsize=7, labelpad=2)
+        cb.ax.tick_params(labelsize=6)
+        cb.outline.set_linewidth(0.3)
 
     def _draw_title(self, ax):
         cfg = self.config
@@ -1197,7 +1363,7 @@ class MapBuilder:
             title = 'Seismic Event Map'
 
         ax.set_title(title, fontsize=14, fontweight='bold',
-                     pad=10, loc='left')
+                     pad=8, loc='left', color='#111111')
 
         subtitle_lines = []
 
@@ -1207,10 +1373,10 @@ class MapBuilder:
                     if e.magnitude_value is not None]
             if mags:
                 subtitle_lines.append(
-                    f'{n} event{"s" if n > 1 else ""}  |  '
-                    f'M {min(mags):.1f} \u2013 {max(mags):.1f}')
+                    '%d event%s  \u00b7  M %.1f \u2013 %.1f'
+                    % (n, 's' if n != 1 else '', min(mags), max(mags)))
             else:
-                subtitle_lines.append(f'{n} event{"s" if n > 1 else ""}')
+                subtitle_lines.append('%d event%s' % (n, 's' if n != 1 else ''))
 
         time_range = meta.get('time_range', '')
         if time_range:
@@ -1220,26 +1386,27 @@ class MapBuilder:
         version = meta.get('version', '')
         parts = []
         if agency and agency != '\u2014':
-            parts.append(f'Agency: {agency}')
+            parts.append(agency)
         if version:
             parts.append(version)
         if parts:
-            subtitle_lines.append('  \u2022  '.join(parts))
+            subtitle_lines.append('  \u00b7  '.join(parts))
 
         if subtitle_lines:
-            y = 1.025
+            y = 1.022
             for line in subtitle_lines:
                 ax.text(0, y, line, transform=ax.transAxes,
-                        fontsize=9.5, color='#222222',
+                        fontsize=8, color='#444444',
                         fontweight='normal',
                         va='bottom', ha='left')
-                y -= 0.028
+                y -= 0.022
 
     def _draw_timestamp(self, fig):
-        ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-        fig.text(0.99, 0.01, f'Generated: {ts}  |  scmap',
+        ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+        fig.text(0.995, 0.004, 'Generated %s  \u00b7  scmap'
+                 % ts,
                  fontsize=5.5, color='#999999', ha='right', va='bottom',
-                 style='italic')
+                 style='italic', fontfamily='monospace')
 
     def _draw_inset(self, fig, lon_min, lon_max, lat_min, lat_max):
         inset_ax = fig.add_axes([0.76, 0.76, 0.18, 0.18],
@@ -1451,6 +1618,11 @@ class ScmapApp(seiscomp.client.Application):
             self.commandline().addStringOption(
                 "Map", "min-city-population",
                 "Minimum population for city labels (default: 100000)."
+            )
+            self.commandline().addStringOption(
+                "Map", "city-spacing",
+                "Spacing multiplier for city labels (default: 1.0). "
+                "Increase to thin out labels in dense areas."
             )
 
             self.commandline().addGroup("Display")
@@ -1705,6 +1877,7 @@ Examples:
             'show_states': self._has_flag("show-states"),
             'show_cities': not self._has_flag("no-cities"),
             'min_city_population': int(self._opt_float("min-city-population", 100000) or 100000),
+            'city_spacing': self._opt_float("city-spacing", 1.0) or 1.0,
             'title': self._opt_str("title"),
             'mode': self._opt_str("mode", "events"),
             'grid_size': self._opt_float("grid-size", 0.5) or 0.5,

@@ -5,6 +5,10 @@ High-resolution PNG map generator for seismicity visualisation, built on the
 or queries a live SeisComP database, then renders publication-quality maps
 with Cartopy and matplotlib.
 
+**Design follows established seismological conventions** (GMT, USGS, EMSC,
+GFZ) with perceptually uniform colour scales, colourblind-safe markers,
+and a clean Tufte-inspired low-data‑ink basemap.
+
 ## Features
 
 - **Three input modes** — QuakeML XML files (`-i`), database by event ID
@@ -15,12 +19,15 @@ with Cartopy and matplotlib.
 - **Focal mechanisms** — beach‑ball rendering for events with moment tensor
   or nodal‑plane data (requires [ObsPy](https://obspy.org/))
 - **Station locations** — derived from arrival azimuth/distance
-- **City labels** — loaded from the SeisComP `cities.xml`, filtered by
-  population threshold
+- **City labels** — loaded from the SeisComP `cities.xml`, with
+  density‑aware collision avoidance and population filtering
 - **Professional layout** — scale bar, north arrow, graticule, inset
-  overview map, depth colour‑bar, magnitude legend, event‑type legend
+  overview map, depth colour‑bar, magnitude reference circles,
+  event‑type legend
 - **Fully configurable** — all colours, sizes, DPI, and dimensions are
   adjustable via CLI
+- **Step‑by‑step debug logging** — `--debug` prints extent, margins,
+  label counts, and analysis grid stats
 
 ## Requirements
 
@@ -82,6 +89,12 @@ scmap -i events.xml --mode mc --grid-size 0.5
 # Rate map with log file
 scmap --start-time "2026-06-01" -d sysop:sysop@localhost:18002/seiscomp \
   --mode rate --grid-size 0.3 --grid-radius 60 --log-file scmap.log
+
+# Thin out city labels in a dense region
+scmap -i events.xml --min-city-population 20000 --city-spacing 1.5
+
+# Debug output showing map build steps
+scmap -i events.xml --debug
 ```
 
 ### Input options
@@ -137,6 +150,24 @@ requires a minimum count before computing a value.
 | `--min-marker-size` | 20 | Minimum marker area |
 | `--max-marker-size` | 450 | Maximum marker area |
 
+### City labels
+
+| Flag | Default | Description |
+|---|---|---|
+| `--min-city-population` | 100 000 | Minimum population to display a label |
+| `--city-spacing` | 1.0 | Spacing multiplier — higher = fewer labels, lower = more |
+| `--no-cities` | — | Disable all city labels |
+
+City label placement uses a density‑aware collision‑avoidance algorithm:
+
+1. **Text‑size estimate** — converts font size, character count, canvas
+   dimensions, and DPI into an approximate degree‑span for each label.
+2. **Density multiplier** — when candidate density exceeds 3 cities/deg²,
+   margins are scaled up (up to 4×) to thin out labels in crowded regions.
+3. **User factor** — `--city-spacing` acts as a global multiplier on all
+   margins.  Values below 1.0 allow more labels (tighter), values above
+   produce sparser labels.
+
 ### Display toggles
 
 | Flag | Effect |
@@ -146,11 +177,10 @@ requires a minimum count before computing a value.
 | `--no-beachballs` | Hide focal‑mechanism beach balls |
 | `--no-borders` | Hide country borders |
 | `--no-inset` | Hide overview inset map |
-| `--no-labels` | Hide magnitude text labels |
+| `--no-labels` | Hide magnitude text labels on event markers |
 | `--no-cities` | Hide city labels |
 | `--show-rivers` | Draw major rivers |
 | `--show-states` | Draw province/state boundaries |
-| `--min-city-population` | Population threshold for city labels (default 100 000) |
 
 ### Standard SeisComP options
 
@@ -182,8 +212,46 @@ Without a scheme prefix, the driver is inferred from `core.plugins` in
 ## Logging
 
 - **Default** (no `--log-file`): messages go to stderr (terminal).
-- **With `--log-file scmap.log`**: messages go to the file; console is silent.
-- Use `--debug` for detailed diagnostic output.
+- **With `--log-file scmap.log`**: messages go to the file; console is
+  silent.
+- **`--debug`**: enables verbose step‑by‑step diagnostic output including
+  map extent, margin, grid dimensions, label counts, collision margins,
+  analysis cell fill‑rates, and render timing.
+
+## Design principles
+
+scmap follows established seismological map conventions:
+
+### Depth colour scale
+
+Uses `inferno_r` — a **perceptually uniform**, **colourblind‑safe**
+colormap that progresses warm‑shallow to cool‑deep.  This avoids the
+traditional red‑green‑blue triad which fails under deuteranopia (~5 % of
+males) and produces phantom discontinuities.  All Crameri/Brewer scientific
+colormaps pass CVD testing; `jet` and `rainbow` are explicitly rejected by
+Nature, EGU journals, and Crameri et al. (2020).
+
+### Magnitude‑to‑size scaling
+
+Markers scale by area ∝ **10^M** (moment‑proportional) rather than energy
+(10^(1.5M)).  This keeps the size range manageable — M 8 events remain
+readable without overwhelming the map — while preserving the relative
+visual weight between magnitudes.  Reference circles at M 2, 4, 6, 8
+appear in the legend, drawn to the exact scale used on the map.
+
+### Basemap
+
+Low‑saturation land (`#F2EFE9`, pale tan) and ocean (`#DCE4EC`, pale
+steel‑blue) maximise contrast with event markers — a Tufte "data‑ink
+ratio" approach.  Coastlines (0.3 pt), borders (0.2 pt), and grid lines
+(0.15 pt) are deliberately thin to let the data dominate.
+
+### Typography
+
+Clear hierarchy: 14 pt bold title → 8 pt subtitle → 7 pt legend
+titles → 6 pt legend body → 5 pt magnitude labels.  All labels use
+sans‑serif for readability at small sizes.  Ink weight increases with
+importance.
 
 ## Event type symbols
 
@@ -207,10 +275,11 @@ scmap recognises all SeisComP event types and groups them for the legend:
 
 ```
 scmap/
-├── scmapdetail.py    # main application
-├── scmap.txt         # usage reference (auto-generated)
-├── map.png           # sample output
-└── README.md         # this file
+├── scmap.py           # main application
+├── scmap.txt          # usage reference (auto‑generated by --help)
+├── map.png            # sample output
+├── README.md          # this file
+└── .gitignore
 ```
 
 ## Algorithm details
@@ -244,8 +313,8 @@ catalogue time span in years.  Nodes with fewer than 5 events are blank.
 ## Contributing
 
 1. Ensure SeisComP Python bindings are on `PYTHONPATH`.
-2. Make changes to `scmapdetail.py`.
-3. Run `python3 scmapdetail.py --help` to verify CLI integrity.
+2. Make changes to `scmap.py`.
+3. Run `python3 scmap.py --help` to verify CLI integrity.
 4. Test with both XML file input and database input where possible.
 
 ## License
@@ -260,8 +329,15 @@ This project is provided as‑is.  SeisComP is distributed under the
 - Aki, K. (1965). *Maximum likelihood estimate of b in the formula
   log N = a − bM and its confidence limits.* Bull. Earthq. Res. Inst.,
   43, 237–239.
+- Crameri, F., Shephard, G.E., & Heron, P.J. (2020). *The misuse of
+  colour in science communication.* Nature Comms., 11, 5444.
+- Tufte, E.R. (2001). *The Visual Display of Quantitative Information*
+  (2nd ed.). Graphics Press.
+- Wessel, P., Luis, J.F., Uieda, L., et al. (2019). *The Generic
+  Mapping Tools version 6.* Geochem. Geophys. Geosyst., 20, 5556–5564.
 - Wiemer, S. & Wyss, M. (2000). *Minimum magnitude of completeness in
   earthquake catalogs: Examples from Alaska, the Western United States,
   and Japan.* Bull. Seismol. Soc. Am., 90(4), 859–869.
 - [SeisComP documentation](https://www.seiscomp.de/)
 - [SeisComP on GitHub](https://github.com/SeisComP)
+- [Crameri Scientific Colormaps](https://www.fabiocrameri.ch/colourmaps/)
