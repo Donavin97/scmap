@@ -1,0 +1,267 @@
+# scmap — SeisComP Seismic Event Map Generator
+
+High-resolution PNG map generator for seismicity visualisation, built on the
+[SeisComP](https://www.seiscomp.de/) framework.  Reads QuakeML event files
+or queries a live SeisComP database, then renders publication-quality maps
+with Cartopy and matplotlib.
+
+## Features
+
+- **Three input modes** — QuakeML XML files (`-i`), database by event ID
+  (`-E`), or database by time range (`--start-time` / `--end-time`)
+- **Four map modes** — event markers (depth‑coloured, magnitude‑scaled),
+  Gutenberg‑Richter b‑value heatmap, magnitude‑of‑completeness (MAXC),
+  and annual seismicity rate
+- **Focal mechanisms** — beach‑ball rendering for events with moment tensor
+  or nodal‑plane data (requires [ObsPy](https://obspy.org/))
+- **Station locations** — derived from arrival azimuth/distance
+- **City labels** — loaded from the SeisComP `cities.xml`, filtered by
+  population threshold
+- **Professional layout** — scale bar, north arrow, graticule, inset
+  overview map, depth colour‑bar, magnitude legend, event‑type legend
+- **Fully configurable** — all colours, sizes, DPI, and dimensions are
+  adjustable via CLI
+
+## Requirements
+
+| Dependency | Purpose |
+|---|---|
+| Python ≥ 3.8 | runtime |
+| [SeisComP](https://www.seiscomp.de/) ≥ 5.0 | `seiscomp.client`, `seiscomp.datamodel`, `seiscomp.core`, `seiscomp.io`, `seiscomp.logging` |
+| numpy | numerical arrays |
+| matplotlib ≥ 3.3 | plotting |
+| [Cartopy](https://scitools.org.uk/cartopy) ≥ 0.18 | map projections, coastlines, borders |
+| ObsPy (optional) | focal‑mechanism beach balls |
+| MySQL / PostgreSQL / SQLite driver (optional) | database queries |
+
+### Installing SeisComP Python bindings
+
+The SeisComP Python packages are shipped with the SeisComP installation under
+`$SEISCOMP_ROOT/lib/python`.  Set `PYTHONPATH` (or `SEISCOMP_ROOT`) so that
+`import seiscomp.client` resolves:
+
+```bash
+export SEISCOMP_ROOT=$HOME/seiscomp
+export PYTHONPATH=$SEISCOMP_ROOT/lib/python:$PYTHONPATH
+```
+
+### Installing Python dependencies
+
+```bash
+pip install numpy matplotlib cartopy obspy
+```
+
+## Usage
+
+```
+scmap [options]
+```
+
+### Quick examples
+
+```bash
+# Render all events from a QuakeML file
+scmap -i events.xml -o map.png
+
+# Fixed geographic region with custom margin
+scmap -i events.xml -o map.png --region 10x8+35+20 -m 5
+
+# Query a single event from the database
+scmap -E smi:org.gfz-potsdam/event1 -d sysop:sysop@localhost:18002/seiscomp
+
+# All events from the last 24 hours (limit 50)
+scmap --start-time "2026-06-15" -d sysop:sysop@localhost:18002/seiscomp \
+  --limit 50 -o map.png
+
+# b-value heatmap, 0.5° grid, 80 km sample radius
+scmap -i events.xml --mode bvalue --grid-size 0.5 --grid-radius 80
+
+# Magnitude-completeness map
+scmap -i events.xml --mode mc --grid-size 0.5
+
+# Rate map with log file
+scmap --start-time "2026-06-01" -d sysop:sysop@localhost:18002/seiscomp \
+  --mode rate --grid-size 0.3 --grid-radius 60 --log-file scmap.log
+```
+
+### Input options
+
+| Flag | Description |
+|---|---|
+| `-i`, `--input` | QuakeML XML file (use `"-"` for stdin) |
+| `-E`, `--event` | Event ID(s) from database (comma‑separated) |
+| `--start-time` | Time‑window start (`"YYYY-MM-DD [HH:MM[:SS]]"`) |
+| `--end-time` | Time‑window end (defaults to now) |
+| `--limit` | Max events from a time‑range query (0 = unlimited) |
+
+### Map modes (`--mode`)
+
+| Mode | Description |
+|---|---|
+| `events` *(default)* | Individual event markers with depth colouring and magnitude‑proportional size |
+| `bvalue` | Gutenberg‑Richter **b‑value** via Aki‑Utsu maximum‑likelihood estimator: `b = log₁₀(e) / (M̄ − Mc)` |
+| `mc` | **Magnitude of completeness** via maximum curvature (MAXC) |
+| `rate` | **Annual seismicity rate** (events / km² / year) above Mc = 1.5 |
+
+All analysis modes use a grid with configurable `--grid-size` (degrees) and
+`--grid-radius` (km).  Each grid node samples events within the radius and
+requires a minimum count before computing a value.
+
+### Analysis options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--grid-size` | 0.5 | Grid cell spacing in degrees |
+| `--grid-radius` | 50 | Sample radius in kilometres |
+
+### Map layout
+
+| Flag | Default | Description |
+|---|---|---|
+| `-o`, `--output` | `map.png` | Output PNG path |
+| `-r`, `--region` | — | Map region (`lat×lon+lat₀+lon₀` or `+lat₀+lon₀+lat₁+lon₁`) |
+| `-m`, `--margin` | 3.0 | Margin in degrees around event centre |
+| `--lat` | — | Centre latitude |
+| `--lon` | — | Centre longitude |
+| `--dimension` | `1600×1000` | Output size in pixels (`WxH`) |
+| `--dpi` | 150 | Output resolution |
+| `--title` | — | Override map title |
+
+### Rendering controls
+
+| Flag | Default | Description |
+|---|---|---|
+| `--depth-max` | 200 | Maximum depth for colour scale (km) |
+| `--min-mag` | 0 | Minimum magnitude for marker scale |
+| `--max-mag` | 8 | Maximum magnitude for marker scale |
+| `--min-marker-size` | 20 | Minimum marker area |
+| `--max-marker-size` | 450 | Maximum marker area |
+
+### Display toggles
+
+| Flag | Effect |
+|---|---|
+| `--no-legend` | Hide legend / parameter box |
+| `--no-stations` | Hide station triangles |
+| `--no-beachballs` | Hide focal‑mechanism beach balls |
+| `--no-borders` | Hide country borders |
+| `--no-inset` | Hide overview inset map |
+| `--no-labels` | Hide magnitude text labels |
+| `--no-cities` | Hide city labels |
+| `--show-rivers` | Draw major rivers |
+| `--show-states` | Draw province/state boundaries |
+| `--min-city-population` | Population threshold for city labels (default 100 000) |
+
+### Standard SeisComP options
+
+Inherited from `seiscomp.client.Application`:
+
+| Flag | Description |
+|---|---|
+| `-d`, `--database` | Database URI: `[mysql://]user:pass@host[:port]/db` |
+| `-H`, `--host` | Messaging host/queue (default `localhost/production`) |
+| `--debug` | Debug logging (`--verbosity=4 --console=1`) |
+| `--log-file` | Write log output to file instead of stderr |
+| `--plugins` | Load SeisComP plugins |
+| `--offline` | Disable messaging connections |
+| `-h`, `--help` | Show full help |
+| `-V`, `--version` | Show framework version |
+
+## Database connection
+
+The `-d` flag accepts SeisComP‑style database URIs:
+
+```
+sysop:sysop@localhost:18002/seiscomp
+mysql://sysop:sysop@localhost/seiscomp
+```
+
+Without a scheme prefix, the driver is inferred from `core.plugins` in
+`global.cfg` (e.g. `dbmysql`, `dbpostgresql`, `dbsqlite3`).
+
+## Logging
+
+- **Default** (no `--log-file`): messages go to stderr (terminal).
+- **With `--log-file scmap.log`**: messages go to the file; console is silent.
+- Use `--debug` for detailed diagnostic output.
+
+## Event type symbols
+
+scmap recognises all SeisComP event types and groups them for the legend:
+
+| Group | Symbol | Example types |
+|---|---|---|
+| Earthquake | ● | `earthquake` |
+| Induced / Triggered | ◆ | `induced earthquake`, `fluid injection` |
+| Explosion / Blast | ★ (red) | `quarry blast`, `nuclear explosion` |
+| Volcanic | ▲ (purple) | `volcanic eruption`, `lahar` |
+| Landslide / Avalanche | ▼ | `landslide`, `rock avalanche` |
+| Collapse | ■ | `mine collapse`, `building collapse` |
+| Rock Burst | ■ (orange) | `rock burst` |
+| Meteor / Impact | ✕ (orange) | `meteor impact`, `meteorite` |
+| Sonic | ⎯ | `sonic boom` |
+| Anthropogenic | ◆ | `anthropogenic event` |
+| Other / Unknown | · | `not reported`, `other event` |
+
+## Project structure
+
+```
+scmap/
+├── scmapdetail.py    # main application
+├── scmap.txt         # usage reference (auto-generated)
+├── map.png           # sample output
+└── README.md         # this file
+```
+
+## Algorithm details
+
+### b‑value
+
+The Aki‑Utsu (1965) maximum‑likelihood estimator for magnitudes M ≥ Mc:
+
+$$b = \frac{\log_{10}(e)}{\bar{M} - M_c}$$
+
+where $\bar{M}$ is the mean magnitude and $M_c$ is a fixed completeness
+threshold (`mc_hint`, default 1.5).  Grid nodes with fewer than 10 events
+are left blank (NaN).
+
+### Magnitude of completeness (Mc)
+
+The maximum curvature method (MAXC; Wiemer & Wyss 2000) bins events by
+0.1 magnitude units and finds the bin with the highest frequency.  Mc is
+estimated as the bin centre + 0.2.  Nodes with fewer than 15 events are
+left blank.
+
+### Seismicity rate
+
+Annual event rate per km² for M ≥ 1.5:
+
+$$\text{rate} = \frac{N}{\pi r^2 \cdot \Delta t}$$
+
+where $N$ is the event count within radius $r$, and $\Delta t$ is the
+catalogue time span in years.  Nodes with fewer than 5 events are blank.
+
+## Contributing
+
+1. Ensure SeisComP Python bindings are on `PYTHONPATH`.
+2. Make changes to `scmapdetail.py`.
+3. Run `python3 scmapdetail.py --help` to verify CLI integrity.
+4. Test with both XML file input and database input where possible.
+
+## License
+
+This project is provided as‑is.  SeisComP is distributed under the
+[GNU AGPL v3](https://www.gnu.org/licenses/agpl-3.0.html) by the
+[GEOFON Program](https://geofon.gfz-potsdam.de/) at
+[GFZ Potsdam](https://www.gfz-potsdam.de/).
+
+## References
+
+- Aki, K. (1965). *Maximum likelihood estimate of b in the formula
+  log N = a − bM and its confidence limits.* Bull. Earthq. Res. Inst.,
+  43, 237–239.
+- Wiemer, S. & Wyss, M. (2000). *Minimum magnitude of completeness in
+  earthquake catalogs: Examples from Alaska, the Western United States,
+  and Japan.* Bull. Seismol. Soc. Am., 90(4), 859–869.
+- [SeisComP documentation](https://www.seiscomp.de/)
+- [SeisComP on GitHub](https://github.com/SeisComP)

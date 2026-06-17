@@ -1,0 +1,137 @@
+
+Verbose:
+  -q [ --quiet ]                Quiet mode: no logging output
+  --verbosity arg               Verbosity level [0..4]
+  --print-context arg           Print source file and line number
+  --print-component arg         Print the log component (default: file:1, 
+                                stdout:0)
+  --component arg               Limits the logging to a certain component. This
+                                option can be given more than once
+  --console arg                 Send log output to stdout
+  --debug                       debug mode: --verbosity=4 --console=1
+  --trace                       trace mode: --verbosity=4 --console=1 
+                                --print-component=1 --print-context=1
+  --log-file arg                Use alternative log file
+  --log-utc arg                 Use UTC instead of local timezone
+  -s [ --syslog ]               Use syslog
+  -l [ --lockfile ] arg         Path to lock file.
+  -v [ --v ]                    Increase verbosity level (may be repeated, eg. 
+                                -vv).
+
+Generic:
+  --config-file arg             The alternative module configuration file. When
+                                this option is used, the module configuration 
+                                is only read from the given file and no other 
+                                configuration stage is considered. Therefore, 
+                                all configuration including the definition of 
+                                plugins must be contained in that file or given
+                                along with other command-line options such as 
+                                --plugins.
+  --plugins arg                 Load given plugins.
+  -h [ --help ]                 Produce help message.
+  -V [ --version ]              Show version information.
+  --print-config-vars           Print all available configuration variables and
+                                exit.
+  --validate-schema-params      Validates the applications description xml and 
+                                exit.
+  --dump-settings               Dump the bound settings and exit.
+
+Database:
+  --db-driver-list              List all supported database drivers.
+  -d [ --database ] arg         The database connection string, format: 
+                                service://user:pwd@host/database.
+  --inventory-db arg            Load the inventory from the given database or 
+                                file, format: [service://]location.
+  --config-db arg               Load the configuration from the given database 
+                                or file, format: [service://]location.
+  --config-module arg (=trunk)  The configmodule to use.
+
+Cities:
+  --city-xml arg                Load the cities from the given XML file.
+
+Input:
+  -i [ --input ] arg            QuakeML XML file with event parameters (use "-"
+                                for stdin).
+  -E [ --event ] arg            Event ID to query from database 
+                                (comma-separated for multiple).
+  --start-time arg              Start of time window for database event query 
+                                (format: "YYYY-MM-DD [HH:MM[:SS]]"). Requires 
+                                -d with a valid database URI.
+  --end-time arg                End of time window for database event query 
+                                (format: "YYYY-MM-DD [HH:MM[:SS]]"). If 
+                                omitted, defaults to current time.
+  --limit arg                   Maximum number of events to return from 
+                                time-range query. 0 = unlimited (default: 0).
+
+Map:
+  -o [ --output ] arg           Output PNG file path (default: map.png).
+  -r [ --region ] arg           Map region defined as latxlon+lat0+lon0 (e.g. 
+                                5x5+45+10) or +lat0+lon0+lat1+lon1.
+  -m [ --margin ] arg           Margin in degrees around event center (default:
+                                3).
+  --lat arg                     Center latitude.
+  --lon arg                     Center longitude.
+  --dimension arg               Output dimensions WxH in pixels (default: 
+                                1600x1000).
+  --dpi arg                     Output DPI (default: 150).
+  --depth-max arg               Max depth in km for color scale (default: 200).
+  --min-mag arg                 Minimum magnitude for marker scale (default: 
+                                0).
+  --max-mag arg                 Maximum magnitude for marker scale (default: 
+                                8).
+  --min-marker-size arg         Minimum marker area for scale (default: 20).
+  --max-marker-size arg         Maximum marker area for scale (default: 450).
+  --title arg                   Override map title text.
+  --min-city-population arg     Minimum population for city labels (default: 
+                                100000).
+
+Display:
+  --no-legend                   Disable event type legend.
+  --no-stations                 Disable station triangle markers.
+  --no-beachballs               Disable focal mechanism beach balls.
+  --no-borders                  Disable country borders.
+  --no-inset                    Disable overview inset map.
+  --no-labels                   Disable magnitude text labels on markers.
+  --no-cities                   Disable city/place name labels.
+  --show-rivers                 Draw major rivers.
+  --show-states                 Draw province/state administrative boundaries.
+
+Usage:
+  scmap [options]
+
+Generate high-resolution PNG seismic event maps from SeisComP data.
+
+Modes:
+  File mode:      scmap -i events.xml -o map.png
+  By event ID:    scmap -E <id> -d user:pass@host:port/db
+  By time range:  scmap --start-time "2024-01-01 00:00" -d user:pass@host:port/db
+  Interactive:    scmap -i - < events.xml > map.png
+
+
+Examples:
+  Render all events from a QuakeML file:
+    scmap -i events.xml -o map.png
+
+  Render a specific region with a 5-degree margin:
+    scmap -i events.xml -o map.png -m 5
+
+  Render a fixed geographic region:
+    scmap -i events.xml -o map.png --region 10x8+35+20
+
+  Query a single event from database and render it:
+    scmap -E smi:org.gfz-potsdam/event1 -d sysop:sysop@localhost:18002/seiscomp
+
+  Query events from the last 24 hours (limit to 50 events):
+    scmap --start-time "2024-06-01 00:00" \
+      -d sysop:sysop@localhost:18002/seiscomp --limit 50 -o map.png
+
+  Query events for a specific day:
+    scmap --start-time "2024-06-01" --end-time "2024-06-02" \
+      -d sysop:sysop@localhost:18002/seiscomp -o map.png
+
+  High-resolution output with custom dimensions:
+    scmap -i events.xml -o map.png --dimension 2400x1600 --dpi 300
+
+  Minimal output (no legend, no inset, no borders):
+    scmap -i events.xml -o map.png --no-legend --no-inset --no-borders
+
