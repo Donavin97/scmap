@@ -130,6 +130,7 @@ LAT=50 LON=8 MARGIN=6 DB="sysop:sysop@10.202.50.1:18002/seiscomp" ./scmap-all.sh
 #   DB="${DB:-localhost:18002/seiscomp}"
 #   GRID_SIZE="${GRID_SIZE:-1.5}"
 #   GRID_RADIUS="${GRID_RADIUS:-300}"
+#   MC_HINT="${MC_HINT:-0.5}"
 #   CITY_POP="${CITY_POP:-50000}"
 ```
 
@@ -151,8 +152,8 @@ locations derived from arrivals, and city labels for population ≥ 50 000.
 
 #### b‑value heatmap
 Gutenberg‑Richter b‑value computed via Aki‑Utsu MLE on a 1.5° × 1.5° grid
-with 300 km sampling radius.  Warm (red) = high b‑value, cool (dark) =
-low b‑value.  Cells with fewer than 10 events are blank.
+with 300 km sampling radius and Mc = 0.5.  Warm (red) = high b‑value,
+cool (dark) = low b‑value.  Cells with fewer than 10 events are blank.
 
 ![b-value map](map_bvalue.png)
 
@@ -164,7 +165,7 @@ detected).  Cells with fewer than 15 events are blank.
 ![Mc map](map_mc.png)
 
 #### Seismicity rate
-Annual event rate (events / km² / year) for M ≥ 1.5.  Bright = high
+Annual event rate (events / km² / year) for M ≥ 0.5.  Bright = high
 activity, dark = low activity.  Cells with fewer than 5 events are blank.
 
 ![Rate map](map_rate.png)
@@ -184,9 +185,9 @@ activity, dark = low activity.  Cells with fewer than 5 events are blank.
 | Mode | Description |
 |---|---|
 | `events` *(default)* | Individual event markers with depth colouring and magnitude‑proportional size |
-| `bvalue` | Gutenberg‑Richter **b‑value** via Aki‑Utsu maximum‑likelihood estimator: `b = log₁₀(e) / (M̄ − Mc)` |
+| `bvalue` | Gutenberg‑Richter **b‑value** via Aki‑Utsu maximum‑likelihood estimator: `b = log₁₀(e) / (M̄ − Mc)`, where Mc is set by `--mc-hint` |
 | `mc` | **Magnitude of completeness** via maximum curvature (MAXC) |
-| `rate` | **Annual seismicity rate** (events / km² / year) above Mc = 1.5 |
+| `rate` | **Annual seismicity rate** (events / km² / year) above Mc set by `--mc-hint` |
 
 All analysis modes use a grid with configurable `--grid-size` (degrees) and
 `--grid-radius` (km).  Each grid node samples events within the radius and
@@ -198,6 +199,7 @@ requires a minimum count before computing a value.
 |---|---|---|
 | `--grid-size` | 0.5 | Grid cell spacing in degrees |
 | `--grid-radius` | 50 | Sample radius in kilometres |
+| `--mc-hint` | 1.5 | Lower magnitude cutoff for b‑value and rate |
 
 ### Map layout
 
@@ -364,8 +366,8 @@ The Aki‑Utsu (1965) maximum‑likelihood estimator for magnitudes M ≥ Mc:
 $$b = \frac{\log_{10}(e)}{\bar{M} - M_c}$$
 
 where $\bar{M}$ is the mean magnitude and $M_c$ is a fixed completeness
-threshold (`mc_hint`, default 1.5).  Grid nodes with fewer than 10 events
-are left blank (NaN).
+threshold (`mc_hint`, default 0.5 in the batch script, configurable via
+`--mc-hint`).  Grid nodes with fewer than 10 events are left blank (NaN).
 
 ### Magnitude of completeness (Mc)
 
@@ -376,7 +378,7 @@ left blank.
 
 ### Seismicity rate
 
-Annual event rate per km² for M ≥ 1.5:
+Annual event rate per km² for M ≥ Mc, where Mc is set by `--mc-hint`:
 
 $$\text{rate} = \frac{N}{\pi r^2 \cdot \Delta t}$$
 
