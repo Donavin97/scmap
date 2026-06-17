@@ -147,27 +147,27 @@ Generated with:
 Depth‑coloured event markers with magnitude‑proportional sizing, station
 locations derived from arrivals, and city labels for population ≥ 50 000.
 
-![Event map](sa_events.png)
+![Event map](map_events.png)
 
 #### b‑value heatmap
 Gutenberg‑Richter b‑value computed via Aki‑Utsu MLE on a 1.5° × 1.5° grid
 with 300 km sampling radius.  Warm (red) = high b‑value, cool (dark) =
 low b‑value.  Cells with fewer than 10 events are blank.
 
-![b-value map](sa_bvalue.png)
+![b-value map](map_bvalue.png)
 
 #### Magnitude of completeness (Mc)
 Maximum‑curvature Mc estimate on the same grid.  Dark = high Mc (catalogue
 complete only at larger magnitudes); bright = low Mc (small events
 detected).  Cells with fewer than 15 events are blank.
 
-![Mc map](sa_mc.png)
+![Mc map](map_mc.png)
 
 #### Seismicity rate
 Annual event rate (events / km² / year) for M ≥ 1.5.  Bright = high
 activity, dark = low activity.  Cells with fewer than 5 events are blank.
 
-![Rate map](sa_rate.png)
+![Rate map](map_rate.png)
 
 ### Input options
 

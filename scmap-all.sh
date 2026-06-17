@@ -21,6 +21,7 @@ OUTDIR="${OUTDIR:-.}"
 CITY_POP="${CITY_POP:-50000}"
 GRID_SIZE="${GRID_SIZE:-1.5}"
 GRID_RADIUS="${GRID_RADIUS:-300}"
+MC_HINT="${MC_HINT:-0.5}"
 
 # ── parse time arguments ───────────────────────────────────────────────
 if [ $# -eq 0 ]; then
@@ -65,6 +66,7 @@ python3 "$(dirname "$0")/scmap.py" \
     --start-time "$START_TIME" --end-time "$END_TIME" \
     --lat "$LAT" --lon "$LON" -m "$MARGIN" \
     --mode bvalue --grid-size "$GRID_SIZE" --grid-radius "$GRID_RADIUS" \
+    --mc-hint "$MC_HINT" \
     --min-city-population 100000 \
     -o "$OUTDIR/map_bvalue.png" \
     --title "b‑value  $LABEL"
@@ -87,6 +89,7 @@ python3 "$(dirname "$0")/scmap.py" \
     --start-time "$START_TIME" --end-time "$END_TIME" \
     --lat "$LAT" --lon "$LON" -m "$MARGIN" \
     --mode rate --grid-size "$GRID_SIZE" --grid-radius "$GRID_RADIUS" \
+    --mc-hint "$MC_HINT" \
     --min-city-population 100000 \
     -o "$OUTDIR/map_rate.png" \
     --title "Seismicity Rate  $LABEL"

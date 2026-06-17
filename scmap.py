@@ -719,9 +719,9 @@ class SeismoAnalysis:
 
     # ── Seismicity rate ─────────────────────────────────────────────────
 
-    def rate_map(self):
-        """Annual seismicity rate per km² above Mc=1.5 on a grid."""
-        seiscomp.logging.debug("      computing rate ...")
+    def rate_map(self, mc_hint=1.5):
+        """Annual seismicity rate per km² above *mc_hint* on a grid."""
+        seiscomp.logging.debug("      computing rate (M ≥ %.1f) ..." % mc_hint)
         lons, lats = self._grid_coords()
         nlons, nlats = len(lons), len(lats)
         values = np.full((nlats, nlons), np.nan)
@@ -742,7 +742,7 @@ class SeismoAnalysis:
         for j, lat in enumerate(lats):
             for i, lon in enumerate(lons):
                 mags = np.array(self._sample(lat, lon))
-                mags = mags[mags >= mc]
+                mags = mags[mags >= mc_hint]
                 if len(mags) >= 5:
                     values[j, i] = len(mags) / (area_km2 * years)
 
@@ -1005,7 +1005,7 @@ class MapBuilder:
             vmin, vmax = 0.5, 3.0
             fmt = '%0.1f'
         elif mode == 'rate':
-            lons, lats, vals = analysis.rate_map()
+            lons, lats, vals = analysis.rate_map(mc_hint=mc_hint)
             cmap = plt.cm.viridis
             label = 'Annual rate  ev / km²'
             vmin, vmax = None, None  # auto-scale
@@ -1061,10 +1061,8 @@ class MapBuilder:
         self._analysis_params = [
             'Mode: %s' % mode,
             'Grid: %.2f°   Radius: %d km' % (grid_size, radius_km),
+            'Mc hint: M\u2009\u2265\u2009%.1f' % mc_hint,
         ]
-        if mode == 'bvalue':
-            self._analysis_params.append('Mc hint: M\u2009\u2265\u2009%.1f'
-                                         % mc_hint)
 
     def _draw_stations(self, ax, proj):
         all_stations = {}
@@ -1639,6 +1637,11 @@ class ScmapApp(seiscomp.client.Application):
                 "Display", "grid-radius",
                 "Sample radius in km for analysis modes (default: 50)."
             )
+            self.commandline().addStringOption(
+                "Display", "mc-hint",
+                "Magnitude completeness threshold for b‑value and rate "
+                "analysis (default: 1.5)."
+            )
             self.commandline().addOption(
                 "Display", "no-legend",
                 "Disable event type legend."
@@ -1883,7 +1886,7 @@ Examples:
             'mode': self._opt_str("mode", "events"),
             'grid_size': self._opt_float("grid-size", 0.5) or 0.5,
             'grid_radius': self._opt_float("grid-radius", 50) or 50,
-            'mc_hint': 1.5,
+            'mc_hint': self._opt_float("mc-hint", 1.5) or 1.5,
         }
 
         region = self._opt_str("region")
