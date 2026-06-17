@@ -719,23 +719,33 @@ class SeismoAnalysis:
 
     # ── Seismicity rate ─────────────────────────────────────────────────
 
-    def rate_map(self, mc_hint=1.5):
-        """Annual seismicity rate per km² above *mc_hint* on a grid."""
+    def rate_map(self, mc_hint=1.5, period_days=0):
+        """Seismicity rate per km² above *mc_hint* on a grid.
+
+        If *period_days* > 0 the rate is normalised to that many days
+        (e.g. 7 = events/km²/week).  Zero means auto‑detect from the
+        catalogue time span (→ annual rate).
+        """
         seiscomp.logging.debug("      computing rate (M ≥ %.1f) ..." % mc_hint)
         lons, lats = self._grid_coords()
         nlons, nlats = len(lons), len(lats)
         values = np.full((nlats, nlons), np.nan)
-        mc = 1.5
 
-        # Estimate time span from event origin times
-        etimes = [e.origin_time for e in self.events
-                  if e.origin_time is not None]
-        if len(etimes) < 2:
-            years = 1.0
+        # Normalisation period
+        if period_days > 0:
+            norm_days = period_days
+            seiscomp.logging.debug("      → normalising to %d days" % norm_days)
         else:
-            tspan = seiscomp.core.TimeSpan(max(etimes) - min(etimes))
-            years = max(1.0, tspan.seconds() / 31557600.0)
-        seiscomp.logging.debug("      → catalogue span: %.2f yr" % years)
+            etimes = [e.origin_time for e in self.events
+                      if e.origin_time is not None]
+            if len(etimes) < 2:
+                norm_days = 365.25
+            else:
+                tspan = seiscomp.core.TimeSpan(max(etimes) - min(etimes))
+                norm_days = max(1.0, tspan.seconds() / 86400.0)
+            seiscomp.logging.debug("      → catalogue span: %.1f days" % norm_days)
+
+        years = norm_days / 365.25
 
         area_km2 = math.pi * self.radius_km ** 2
 
@@ -1005,9 +1015,21 @@ class MapBuilder:
             vmin, vmax = 0.5, 3.0
             fmt = '%0.1f'
         elif mode == 'rate':
-            lons, lats, vals = analysis.rate_map(mc_hint=mc_hint)
+            period_days = config.get('rate_period', 0)
+            lons, lats, vals = analysis.rate_map(mc_hint=mc_hint,
+                                                 period_days=period_days)
             cmap = plt.cm.viridis
-            label = 'Annual rate  ev / km²'
+            if period_days > 0:
+                if period_days == 1:
+                    label = 'Rate  ev / km² / day'
+                elif period_days == 7:
+                    label = 'Rate  ev / km² / week'
+                elif period_days <= 31:
+                    label = 'Rate  ev / km² / %d d' % period_days
+                else:
+                    label = 'Rate  ev / km² / %d d' % period_days
+            else:
+                label = 'Annual rate  ev / km²'
             vmin, vmax = None, None  # auto-scale
             fmt = '%0.2e'
         else:
@@ -1063,6 +1085,8 @@ class MapBuilder:
             'Grid: %.2f°   Radius: %d km' % (grid_size, radius_km),
             'Mc hint: M\u2009\u2265\u2009%.1f' % mc_hint,
         ]
+        if mode == 'rate' and period_days > 0:
+            self._analysis_params.append('Period: %d d' % period_days)
 
     def _draw_stations(self, ax, proj):
         all_stations = {}
@@ -1642,6 +1666,11 @@ class ScmapApp(seiscomp.client.Application):
                 "Magnitude completeness threshold for b‑value and rate "
                 "analysis (default: 1.5)."
             )
+            self.commandline().addStringOption(
+                "Display", "rate-period",
+                "Rate normalisation period in days (default: 0 = auto). "
+                "Set to 7 for weekly rate, 1 for daily, etc."
+            )
             self.commandline().addOption(
                 "Display", "no-legend",
                 "Disable event type legend."
@@ -1887,6 +1916,7 @@ Examples:
             'grid_size': self._opt_float("grid-size", 0.5) or 0.5,
             'grid_radius': self._opt_float("grid-radius", 50) or 50,
             'mc_hint': self._opt_float("mc-hint", 1.5) or 1.5,
+            'rate_period': int(self._opt_float("rate-period", 0) or 0),
         }
 
         region = self._opt_str("region")

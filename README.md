@@ -131,6 +131,7 @@ LAT=50 LON=8 MARGIN=6 DB="sysop:sysop@10.202.50.1:18002/seiscomp" ./scmap-all.sh
 #   GRID_SIZE="${GRID_SIZE:-1.5}"
 #   GRID_RADIUS="${GRID_RADIUS:-300}"
 #   MC_HINT="${MC_HINT:-0.5}"
+#   RATE_PERIOD="${RATE_PERIOD:-0}"
 #   CITY_POP="${CITY_POP:-50000}"
 ```
 
@@ -165,8 +166,8 @@ detected).  Cells with fewer than 15 events are blank.
 ![Mc map](map_mc.png)
 
 #### Seismicity rate
-Annual event rate (events / km² / year) for M ≥ 0.5.  Bright = high
-activity, dark = low activity.  Cells with fewer than 5 events are blank.
+Weekly event rate (events / km² / week) for M ≥ 0.5, normalised to 7 days.
+Bright = high activity, dark = low.  Cells with fewer than 5 events are blank.
 
 ![Rate map](map_rate.png)
 
@@ -200,6 +201,7 @@ requires a minimum count before computing a value.
 | `--grid-size` | 0.5 | Grid cell spacing in degrees |
 | `--grid-radius` | 50 | Sample radius in kilometres |
 | `--mc-hint` | 1.5 | Lower magnitude cutoff for b‑value and rate |
+| `--rate-period` | 0 | Rate normalisation in days (0 = auto annual).  Set to 7 for weekly, 1 for daily |
 
 ### Map layout
 

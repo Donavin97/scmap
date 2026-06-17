@@ -22,6 +22,7 @@ CITY_POP="${CITY_POP:-50000}"
 GRID_SIZE="${GRID_SIZE:-1.5}"
 GRID_RADIUS="${GRID_RADIUS:-300}"
 MC_HINT="${MC_HINT:-0.5}"
+RATE_PERIOD="${RATE_PERIOD:-0}"
 
 # ── parse time arguments ───────────────────────────────────────────────
 if [ $# -eq 0 ]; then
@@ -90,6 +91,7 @@ python3 "$(dirname "$0")/scmap.py" \
     --lat "$LAT" --lon "$LON" -m "$MARGIN" \
     --mode rate --grid-size "$GRID_SIZE" --grid-radius "$GRID_RADIUS" \
     --mc-hint "$MC_HINT" \
+    --rate-period "$RATE_PERIOD" \
     --min-city-population 100000 \
     -o "$OUTDIR/map_rate.png" \
     --title "Seismicity Rate  $LABEL"
