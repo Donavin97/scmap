@@ -5,7 +5,8 @@ scmap – SeisComP seismic event map generator.
 
 Generates high-resolution PNG maps from SeisComP event parameters. Supports:
 
-  - Reading QuakeML XML files exported via scxmldump (offline mode)
+  - Reading SCML (SeisComP Markup Language) XML files exported via
+    scxmldump (offline mode)
   - Direct database queries by event ID (online mode, requires -d)
   - Multiple event types with distinct symbols (explosions: stars,
     earthquakes: circles, landslides: triangles, etc.)
@@ -1509,7 +1510,7 @@ class ScmapApp(seiscomp.client.Application):
     SeisComP client application for generating seismic event maps.
 
     Supports two modes of operation:
-       -- offline:  Reads QuakeML from file/stdin (-i)
+       -- offline:  Reads SCML from file/stdin (-i)
        -- online:   Queries events from SeisComP database
                     (-d with -E for IDs or --start-time/--end-time for range)
 
@@ -1537,7 +1538,7 @@ class ScmapApp(seiscomp.client.Application):
             self.commandline().addGroup("Input")
             self.commandline().addStringOption(
                 "Input", "input,i",
-                "QuakeML XML file with event parameters (use \"-\" for stdin)."
+                "SCML XML file with event parameters (use \"-\" for stdin)."
             )
             self.commandline().addStringOption(
                 "Input", "event,E",
@@ -1762,7 +1763,7 @@ Analysis modes (--mode):
 
         print("""
 Examples:
-  Render all events from a QuakeML file:
+  Render all events from an SCML file:
     scmap -i events.xml -o map.png
 
   Render a specific region with a 5-degree margin:
