@@ -16,7 +16,7 @@ Generates high-resolution PNG maps from SeisComP event parameters. Supports:
   - Station locations derived from arrival data
   - Comprehensive legend with event types, magnitude scale, depth colorbar
   - Scale bar, grid lines, country borders
-  - Inset overview map
+   - OpenStreetMap raster tiles via --osm
 
 Usage:
     scmap -i events.xml -o map.png
@@ -40,6 +40,7 @@ from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import cartopy.io.img_tiles as cimgt
 
 # ── SeisComP Python bindings ──────────────────────────────────────────────
 import seiscomp.client
@@ -837,6 +838,8 @@ class MapBuilder:
             min_pop = config.get('min_city_population', 100000)
             seiscomp.logging.debug("  cities      : drawing (min pop ≥ %d) ..." % min_pop)
             self._draw_cities(ax, proj, lon_min, lon_max, lat_min, lat_max)
+        elif config.get('use_osm'):
+            seiscomp.logging.debug("  cities      : skipped (OSM tiles provide place labels)")
 
         seiscomp.logging.debug("  scale bar   : drawing ...")
         self._draw_scale_bar(ax, proj, lon_min, lat_min)
@@ -898,6 +901,20 @@ class MapBuilder:
 
     def _draw_basemap(self, ax):
         cfg = self.config
+        if cfg.get('use_osm', False):
+            dims = cfg['dimension']
+            extent = ax.get_extent()
+            dlon = extent[1] - extent[0]
+            if dlon <= 0:
+                dlon = 360
+            zoom = int(math.log2(360 * dims[0] / (256 * dlon)))
+            zoom = max(0, min(zoom, 19))
+            seiscomp.logging.debug("  osm tiles   : zoom=%d (dlon=%.2f° px=%d)"
+                                   % (zoom, dlon, dims[0]))
+            tiler = cimgt.OSM()
+            ax.add_image(tiler, zoom, zorder=0, interpolation='bilinear')
+            return
+
         # Low-saturation land & ocean allow event markers to dominate
         # visually — Tufte "data-ink ratio" principle.
         ax.add_feature(cfeature.OCEAN.with_scale('50m'),
@@ -1647,6 +1664,12 @@ class ScmapApp(seiscomp.client.Application):
                 "Spacing multiplier for city labels (default: 1.0). "
                 "Increase to thin out labels in dense areas."
             )
+            self.commandline().addOption(
+                "Map", "osm",
+                "Use OpenStreetMap raster tiles for the base map instead "
+                "of vector features. Events and overlays are plotted on top "
+                "of the OSM layer."
+            )
 
             self.commandline().addGroup("Display")
             self.commandline().addStringOption(
@@ -1908,7 +1931,7 @@ Examples:
             'show_labels': not self._has_flag("no-labels"),
             'show_rivers': self._has_flag("show-rivers"),
             'show_states': self._has_flag("show-states"),
-            'show_cities': not self._has_flag("no-cities"),
+            'show_cities': not self._has_flag("no-cities") and not self._has_flag("osm"),
             'min_city_population': int(self._opt_float("min-city-population", 100000) or 100000),
             'city_spacing': self._opt_float("city-spacing", 1.0) or 1.0,
             'title': self._opt_str("title"),
@@ -1917,6 +1940,7 @@ Examples:
             'grid_radius': self._opt_float("grid-radius", 50) or 50,
             'mc_hint': self._opt_float("mc-hint", 1.5) or 1.5,
             'rate_period': int(self._opt_float("rate-period", 0) or 0),
+            'use_osm': self._has_flag("osm"),
         }
 
         region = self._opt_str("region")

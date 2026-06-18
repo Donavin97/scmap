@@ -24,6 +24,9 @@ and a clean Tufte-inspired low-data‑ink basemap.
 - **Professional layout** — scale bar, north arrow, graticule, inset
   overview map, depth colour‑bar, magnitude reference circles,
   event‑type legend
+- **OpenStreetMap tiles** — optional `--osm` flag swaps the vector land/ocean
+  basemap for OSM raster tiles, providing roads, terrain, and built‑up
+  area context beneath event markers
 - **Fully configurable** — all colours, sizes, DPI, and dimensions are
   adjustable via CLI
 - **Step‑by‑step debug logging** — `--debug` prints extent, margins,
@@ -95,6 +98,9 @@ scmap -i events.xml --min-city-population 20000 --city-spacing 1.5
 
 # Debug output showing map build steps
 scmap -i events.xml --debug
+
+# Use OpenStreetMap raster tiles as the base map
+scmap -i events.xml --osm -o map.png
 ```
 
 ### Batch script (`scmap-all.sh`)
