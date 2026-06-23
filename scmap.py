@@ -1149,14 +1149,12 @@ class MapBuilder:
 
         tp_vals = []
         tsp_vals = []
-        event_labels = []
         vp_vals = []
         vs_vals = []
         tp_theo = []
         tsp_theo = []
         tp_ponly = []
         tsp_ponly = []
-        event_labels_ponly = []
 
         vel_model = config.get('velocity_model')
         ttt = None
@@ -1272,7 +1270,6 @@ class MapBuilder:
         for se in self.events:
             if not se.arrivals or se.latitude is None or se.origin_time is None:
                 continue
-            ev_label = se.public_id.split('/')[-1] if '/' in se.public_id else se.public_id
             p_arr = [(d, a, t) for ph, d, a, t in se.arrivals
                      if t is not None and d is not None
                      and ph.upper().startswith('P')]
@@ -1302,7 +1299,6 @@ class MapBuilder:
                         matched_p.add(p_idx)
                         tp_vals.append(p_tt)
                         tsp_vals.append(s_tt - p_tt)
-                        event_labels.append(ev_label)
                         if p_dist is not None and p_tt > 0 and s_tt > 0:
                             dist_km = p_dist * 111.19
                             vp_i = dist_km / p_tt
@@ -1346,24 +1342,22 @@ class MapBuilder:
                         if tt_p > 0 and tt_s > tt_p:
                             tp_ponly.append(p_tt)
                             tsp_ponly.append(tt_s - tt_p)
-                            event_labels_ponly.append(ev_label)
                     except Exception:
                         pass
 
         tp = np.array(tp_vals)
         tsp = np.array(tsp_vals)
-        labels = np.array(event_labels)
 
         mask = tsp > 0
         tp = tp[mask]
         tsp = tsp[mask]
-        labels = labels[mask]
 
         n_pts = len(tp)
         n_ponly = len(tp_ponly)
         n_vel = len(vp_vals)
-        unique_labels = list(dict.fromkeys(labels))
-        n_events_wadati = len(unique_labels)
+        n_events_wadati = len([se for se in self.events
+                               if se.arrivals and se.latitude is not None
+                               and se.origin_time is not None])
         mean_vp = np.mean(vp_vals) if n_vel > 0 else None
         mean_vs = np.mean(vs_vals) if n_vel > 0 else None
         seiscomp.logging.debug("Wadati: %d paired points from %d event(s), "
@@ -1397,13 +1391,9 @@ class MapBuilder:
         rmse = np.sqrt(np.mean(residuals ** 2))
         r2 = 1 - np.sum(residuals ** 2) / np.sum((tsp - np.mean(tsp)) ** 2)
 
-        cmap = plt.get_cmap('tab10')
-        for ev_idx, ev_label in enumerate(unique_labels):
-            mask_ev = labels == ev_label
-            ax.scatter(tp[mask_ev], tsp[mask_ev], s=35,
-                       c=[cmap(ev_idx % 10)], edgecolors=[cmap(ev_idx % 10)],
-                       alpha=0.7, zorder=3, linewidths=0.5,
-                       label=ev_label)
+        ax.scatter(tp, tsp, s=35, c='#2196F3', edgecolors='#1565C0',
+                   alpha=0.7, zorder=3, linewidths=0.5,
+                   label=r'Observed P/S pairs ($n$=%d)' % n_pts)
 
         x_fit = np.linspace(0, tp.max() * 1.1, 200)
         y_fit = intercept + slope * x_fit
@@ -1411,17 +1401,10 @@ class MapBuilder:
                 zorder=4, label='Linear fit')
 
         if n_ponly > 0:
-            ponly_labels = np.array(event_labels_ponly)
-            unique_ponly = list(dict.fromkeys(ponly_labels))
-            for ev_idx, ev_label in enumerate(unique_ponly):
-                mask_ev = ponly_labels == ev_label
-                ax.scatter(np.array(tp_ponly)[mask_ev],
-                           np.array(tsp_ponly)[mask_ev],
-                           s=40, marker='s',
-                           c='none', edgecolors='#FF8F00', alpha=0.8,
-                           zorder=3, linewidths=1.0,
-                           label=r'%s P-only $\times$ model S–P (%d)'
-                                 % (ev_label, mask_ev.sum()))
+            ax.scatter(tp_ponly, tsp_ponly, s=40, marker='s',
+                       c='none', edgecolors='#FF8F00', alpha=0.8,
+                       zorder=3, linewidths=1.0,
+                       label=r'P-only $\times$ model S–P ($n$=%d)' % n_ponly)
 
         has_theo = len(tp_theo) > 0
         if has_theo:
@@ -1441,14 +1424,13 @@ class MapBuilder:
         else:
             vp_vs_model = None
 
-        n_events_wadati = len(unique_labels)
         ax.set_xlabel('P-wave travel time  $T_P$ (s)', fontsize=12)
         ax.set_ylabel('S minus P travel time  $T_S - T_P$ (s)', fontsize=12)
         subtitle = (
             f'{n_events_wadati} event(s)  |  '
-            'Colour = event  |  '
-            'Squares = P-only + model S  |  '
-            'Green = theoretical model'
+            f'Paired P/S: {n_pts}  |  '
+            + (f'P-only + model S: {n_ponly}  |  ' if n_ponly else '')
+            + ('Green = theoretical model' if has_theo else '')
         )
         ax.set_title('Wadati Diagram\n' + subtitle,
                      fontsize=11, fontweight='bold', linespacing=1.3)
