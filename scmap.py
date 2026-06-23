@@ -1176,10 +1176,57 @@ class MapBuilder:
                 seiscomp.logging.warning(
                     "Wadati: failed to initialise travel-time table: %s" % e)
 
-        # Compute spatial extent and filter events to region
+        # Collect event and station locations from all events for auto-extent
+        all_event_lats = [se.latitude for se in self.events if se.latitude is not None]
+        all_event_lons = [se.longitude for se in self.events if se.longitude is not None]
+        all_station_lats = []
+        all_station_lons = []
+        all_station_keys = set()
+        for se in self.events:
+            if se.latitude is None:
+                continue
+            for ph, dist, az, *_ in se.arrivals:
+                if dist is not None and az is not None:
+                    slat, slon = _az_dist_to_latlon(
+                        se.latitude, se.longitude, az, dist)
+                    key = (round(slat, 4), round(slon, 4))
+                    if key not in all_station_keys:
+                        all_station_keys.add(key)
+                        all_station_lats.append(slat)
+                        all_station_lons.append(slon)
+
+        # Compute spatial extent
         extent = self._compute_extent()
         if extent:
-            lon_min, lon_max, lat_min, lat_max = extent
+            has_explicit = bool(config.get('region') or config.get('lat') is not None)
+            if not has_explicit and (all_event_lats or all_station_lats):
+                # Auto-zoom to events + stations with 20 % padding
+                all_lats = all_event_lats + all_station_lats
+                all_lons = [((lon + 180) % 360) - 180 for lon in all_event_lons + all_station_lons]
+                lat_min, lat_max = min(all_lats), max(all_lats)
+                lon_min, lon_max = min(all_lons), max(all_lons)
+                # Sanity check: if span exceeds 180° lon or 90° lat, fall
+                # back to default extent (data is likely global)
+                if lon_max - lon_min > 180 or lat_max - lat_min > 90:
+                    lon_min, lon_max, lat_min, lat_max = extent
+                    seiscomp.logging.debug(
+                        "Wadati: data span too large, using default extent")
+                else:
+                    lat_range = max(lat_max - lat_min, 0.5)
+                    lon_range = max(lon_max - lon_min, 0.5)
+                    pad_lat = lat_range * 0.2
+                    pad_lon = lon_range * 0.2
+                    lat_min -= pad_lat
+                    lat_max += pad_lat
+                    lon_min -= pad_lon
+                    lon_max += pad_lon
+                    extent = (lon_min, lon_max, lat_min, lat_max)
+                    seiscomp.logging.debug(
+                        "Wadati: auto extent from events+stations "
+                        "lon=[%.4f,%.4f] lat=[%.4f,%.4f]" % extent)
+            else:
+                lon_min, lon_max, lat_min, lat_max = extent
+
             filtered = [se for se in self.events
                         if se.latitude is not None
                         and lon_min <= se.longitude <= lon_max
@@ -1205,7 +1252,7 @@ class MapBuilder:
             plt.close(fig)
             return
 
-        # Collect station locations for inset map
+        # Collect station locations for inset map (from filtered events)
         station_lons = []
         station_lats = []
         station_keys = set()
