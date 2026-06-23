@@ -112,6 +112,15 @@ scmap -E SEC2026mhzy -d localhost --mode wadati -o wadati.png
 # Wadati diagram with theoretical overlay from a LOCSAT velocity model
 scmap -E SEC2026mhzy -d localhost --mode wadati --velocity-model iasp91_scanloc \
   -o wadati.png
+
+# Wadati diagram for a time range with explicit centre and auto-zoom
+scmap --start-time "2026-06-22 16:00" --end-time "2026-06-23 09:00" \
+  -d localhost --lat -26.4 --lon 27.4 --mode wadati -o wadati.png
+
+# Wadati diagram with fixed region, custom margin, and velocity-model overlay
+scmap --start-time "2026-06-22" --end-time "2026-06-23" \
+  -d localhost --lat -26.4 --lon 27.4 --margin 5 \
+  --mode wadati --velocity-model iasp91 -o wadati.png
 ```
 
 ### Batch script (`scmap-all.sh`)
