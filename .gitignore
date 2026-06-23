@@ -1,8 +1,10 @@
 *.bak
+*.log
+*.png
+*.so
+__pycache__/
 certs/*-key.pem
 certs/*-req.pem
 certs/*.srl
+certs/scmap.crt
 linkedin.txt
-*.log
-*.png
-__pycache__/
