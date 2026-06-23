@@ -1176,6 +1176,52 @@ class MapBuilder:
                 seiscomp.logging.warning(
                     "Wadati: failed to initialise travel-time table: %s" % e)
 
+        # Compute spatial extent and filter events to region
+        extent = self._compute_extent()
+        if extent:
+            lon_min, lon_max, lat_min, lat_max = extent
+            filtered = [se for se in self.events
+                        if se.latitude is not None
+                        and lon_min <= se.longitude <= lon_max
+                        and lat_min <= se.latitude <= lat_max]
+            if len(filtered) < len(self.events):
+                seiscomp.logging.debug(
+                    "Wadati: filtered to %d of %d event(s) within region"
+                    % (len(filtered), len(self.events)))
+            self.events = filtered
+
+        if not self.events:
+            seiscomp.logging.warning("Wadati: no events within region")
+            # Create a minimal "no data" figure
+            dpi = config.get('dpi', 150)
+            fig, ax = plt.subplots(figsize=(9, 7), dpi=dpi, facecolor='white')
+            ax.text(0.5, 0.5, 'No events available for Wadati diagram\n'
+                    'within the selected region/time range.',
+                    ha='center', va='center', fontsize=13,
+                    transform=ax.transAxes, color='#666666')
+            ax.set_title('Wadati Diagram — No Data', fontsize=13)
+            fig.savefig(output_path, dpi=dpi, bbox_inches='tight',
+                        facecolor='white', edgecolor='none')
+            plt.close(fig)
+            return
+
+        # Collect station locations for inset map
+        station_lons = []
+        station_lats = []
+        station_keys = set()
+        for se in self.events:
+            if se.latitude is None:
+                continue
+            for ph, dist, az, *_ in se.arrivals:
+                if dist is not None and az is not None:
+                    slat, slon = _az_dist_to_latlon(
+                        se.latitude, se.longitude, az, dist)
+                    key = (round(slat, 4), round(slon, 4))
+                    if key not in station_keys:
+                        station_keys.add(key)
+                        station_lons.append(slon)
+                        station_lats.append(slat)
+
         for se in self.events:
             if not se.arrivals or se.latitude is None or se.origin_time is None:
                 continue
@@ -1279,7 +1325,9 @@ class MapBuilder:
                                % (n_pts, n_events_wadati, n_ponly, n_vel))
 
         dpi = config.get('dpi', 150)
-        fig, ax = plt.subplots(figsize=(9, 7), dpi=dpi, facecolor='white')
+        fig = plt.figure(figsize=(11, 7), dpi=dpi, facecolor='white')
+        gs = fig.add_gridspec(1, 2, width_ratios=[2.5, 1], wspace=0.3)
+        ax = fig.add_subplot(gs[0, 0])
 
         if n_pts < 4:
             ax.text(0.5, 0.5, 'Insufficient paired P/S arrival data\n'
@@ -1385,7 +1433,36 @@ class MapBuilder:
         ax.grid(True, alpha=0.25, linestyle=':')
         ax.legend(loc='lower right', fontsize=10)
 
-        fig.tight_layout()
+        # Inset map
+        ax_map = fig.add_subplot(gs[0, 1], projection=ccrs.PlateCarree())
+        if extent:
+            ax_map.set_extent([lon_min, lon_max, lat_min, lat_max],
+                              crs=ccrs.PlateCarree())
+        ax_map.add_feature(cfeature.OCEAN.with_scale('110m'),
+                           facecolor='#DCE4EC', zorder=1)
+        ax_map.add_feature(cfeature.LAND.with_scale('110m'),
+                           facecolor='#F2EFE9', zorder=2)
+        ax_map.add_feature(cfeature.COASTLINE.with_scale('110m'),
+                           edgecolor='#555555', linewidth=0.4, zorder=3)
+        if station_lons:
+            ax_map.scatter(station_lons, station_lats, marker='v', s=8,
+                           c='#444444', edgecolors='white', linewidths=0.3,
+                           zorder=5, transform=ccrs.PlateCarree(),
+                           label='Stations')
+        event_lons = [se.longitude for se in self.events
+                      if se.longitude is not None]
+        event_lats = [se.latitude for se in self.events
+                      if se.latitude is not None]
+        if event_lons:
+            ax_map.scatter(event_lons, event_lats, marker='o', s=12,
+                           c='#D32F2F', edgecolors='white', linewidths=0.3,
+                           zorder=6, transform=ccrs.PlateCarree(),
+                           label='Events')
+        ax_map.set_title('Station & event map', fontsize=8)
+        ax_map.legend(fontsize=6, loc='lower right',
+                      handletextpad=0.3, borderpad=0.3)
+
+        fig.tight_layout(w_pad=2)
         fig.savefig(output_path, dpi=dpi, bbox_inches='tight',
                     facecolor='white', edgecolor='none', pad_inches=0.3)
         plt.close(fig)
