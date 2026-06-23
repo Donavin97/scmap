@@ -1149,6 +1149,8 @@ class MapBuilder:
 
         tp_vals = []
         tsp_vals = []
+        vp_vals = []
+        vs_vals = []
         tp_theo = []
         tsp_theo = []
         tp_ponly = []
@@ -1204,6 +1206,13 @@ class MapBuilder:
                         matched_p.add(p_idx)
                         tp_vals.append(p_tt)
                         tsp_vals.append(s_tt - p_tt)
+                        if p_dist is not None and p_tt > 0 and s_tt > 0:
+                            dist_km = p_dist * 111.19
+                            vp_i = dist_km / p_tt
+                            vs_i = dist_km / s_tt
+                            if 2 < vp_i < 15 and 1 < vs_i < 10:
+                                vp_vals.append(vp_i)
+                                vs_vals.append(vs_i)
 
                         if ttt is not None and p_dist is not None:
                             sta_lat, sta_lon = _az_dist_to_latlon(
@@ -1252,8 +1261,12 @@ class MapBuilder:
 
         n_pts = len(tp)
         n_ponly = len(tp_ponly)
-        seiscomp.logging.debug("Wadati: %d paired points, %d P-only with model after filtering"
-                               % (n_pts, n_ponly))
+        n_vel = len(vp_vals)
+        mean_vp = np.mean(vp_vals) if n_vel > 0 else None
+        mean_vs = np.mean(vs_vals) if n_vel > 0 else None
+        seiscomp.logging.debug("Wadati: %d paired points, %d P-only with model, "
+                               "%d velocity estimates after filtering"
+                               % (n_pts, n_ponly, n_vel))
 
         dpi = config.get('dpi', 150)
         fig, ax = plt.subplots(figsize=(9, 7), dpi=dpi, facecolor='white')
@@ -1321,10 +1334,11 @@ class MapBuilder:
             '\u2500 Observed data \u2500\n'
             f'Paired P/S: {n_pts}\n'
             f'P-only + model S: {n_ponly}\n'
-            f'$V_P/V_S$ = {vp_vs:.3f}\n'
-            f'RMSE = {rmse:.2f} s\n'
-            f'$R^2$ = {r2:.3f}'
+            f'$V_P/V_S$ = {vp_vs:.3f}'
         )
+        if mean_vp is not None:
+            stats += f'\n$V_P$ = {mean_vp:.2f} km/s\n$V_S$ = {mean_vs:.2f} km/s'
+        stats += f'\nRMSE = {rmse:.2f} s\n$R^2$ = {r2:.3f}'
         if has_theo:
             stats += (
                 f'\n\n\u2500 Model: {vel_model} \u2500\n'
@@ -1351,6 +1365,10 @@ class MapBuilder:
         seiscomp.logging.info(
             "Vp/Vs = %.3f  (slope=%.3f, intercept=%.2f s, R²=%.3f, n=%d)"
             % (vp_vs, slope, intercept, r2, n_pts))
+        if mean_vp is not None:
+            seiscomp.logging.info(
+                "Mean Vp = %.2f km/s, Vs = %.2f km/s (from %d stations)"
+                % (mean_vp, mean_vs, n_vel))
         if has_theo:
             seiscomp.logging.info(
                 "Model %s: Vp/Vs = %.3f" % (vel_model, vp_vs_model))
