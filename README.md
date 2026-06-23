@@ -57,6 +57,9 @@ Contact [donavinliebgott@gmail.com](mailto:donavinliebgott@gmail.com) to
 purchase an annual license for your institution.  Licences are issued per
 organisation and include updates for the validity period.
 
+See [PRO_FEATURES.md](PRO_FEATURES.md) for a full roadmap of current and
+planned Pro capabilities.
+
 ### Installing the Pro license
 
 You will receive two files:
@@ -438,6 +441,7 @@ scmap/
 ├── license_check.c    # C source for Pro license verification
 ├── certs/
 │   └── scmap-ca-cert.pem  # CA public certificate
+├── PRO_FEATURES.md    # planned Pro feature roadmap
 ├── tools/
 │   └── gen_license.sh # license issuer (requires CA key, kept offline)
 ├── map.png            # sample output
