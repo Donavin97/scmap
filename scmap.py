@@ -31,9 +31,21 @@ __email__ = 'donavinliebgott@gmail.com'
 import sys
 import os
 import math
-import xml.etree.ElementTree as ET
+import time
+import json
+import csv
+import io
+import re
+import textwrap
+import warnings
+import traceback
+from multiprocessing import Pool, cpu_count
+from collections import defaultdict
 from datetime import datetime, timezone
 
+import xml.etree.ElementTree as ET
+import seiscomp.client, seiscomp.core, seiscomp.datamodel as dm
+import seiscomp.logging, seiscomp.io
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -41,9 +53,36 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
+import cartopy
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import cartopy.io.img_tiles as cimgt
+
+# Shared OSM tile cache (avoids re-downloading on every run)
+_CARTOPY_CACHE = os.environ.get(
+    'CARTOPY_CACHE_DIR',
+    os.path.join(os.path.expanduser('~'), '.cache', 'cartopy'))
+os.makedirs(_CARTOPY_CACHE, exist_ok=True)
+cartopy.config['cache_dir'] = _CARTOPY_CACHE
+
+
+class TileSource(cimgt.GoogleWTS):
+    """Cartopy tile source with configurable URL template and cache."""
+    def __init__(self, url_template, name, user_agent='scmap/1.0'):
+        cache = os.path.join(cartopy.config['cache_dir'], name)
+        os.makedirs(cache, exist_ok=True)
+        super().__init__(user_agent=user_agent, cache=cache)
+        self._url_template = url_template
+
+    def _image_url(self, tile):
+        x, y, z = tile
+        return self._url_template.format(z=z, x=x, y=y)
+
+
+TILE_SOURCES = {
+    'osm':  'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    'topo': 'https://tile.opentopomap.org/{z}/{x}/{y}.png',
+}
 
 # ── SeisComP Python bindings ──────────────────────────────────────────────
 import seiscomp.client
@@ -629,8 +668,47 @@ def load_cities(lon_min, lon_max, lat_min, lat_max, min_population=100000):
         seiscomp.logging.warning("Failed to parse cities.xml: %s" % e)
 
 
+# ── Grid cell task for multiprocessing ──────────────────────────────────
+
+def _grid_cell_task(args):
+    """Compute a single grid cell value.  Standalone function for Pool."""
+    lat, lon, radius_km, ev_lats, ev_lons, ev_mags, mode, mc_hint, bin_width, min_events, norm_days, area_km2, years = args
+    dlat = np.radians(ev_lats - lat)
+    dlon = np.radians(ev_lons - lon)
+    cosa = np.cos(np.radians(lat)) * np.cos(np.radians(ev_lats))
+    a = np.sin(dlat / 2) ** 2 + cosa * np.sin(dlon / 2) ** 2
+    dists = 6371.0 * 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+    mags = ev_mags[dists <= radius_km]
+
+    if mode == 'bvalue':
+        mags = mags[mags >= mc_hint]
+        if len(mags) >= min_events:
+            return math.log10(math.e) / (mags.mean() - mc_hint)
+        return np.nan
+    elif mode == 'mc':
+        if len(mags) < min_events:
+            return np.nan
+        m_min = np.floor(mags.min() / bin_width) * bin_width
+        m_max = np.ceil(mags.max() / bin_width) * bin_width
+        if m_max <= m_min:
+            return np.nan
+        bins = np.arange(m_min, m_max + bin_width, bin_width)
+        hist, edges = np.histogram(mags, bins=bins)
+        if len(hist) == 0:
+            return np.nan
+        idx = np.argmax(hist)
+        return (edges[idx] + edges[idx + 1]) / 2 + 0.2
+    elif mode == 'rate':
+        mags = mags[mags >= mc_hint]
+        if len(mags) >= min_events:
+            return len(mags) / (area_km2 * years)
+        return np.nan
+    return np.nan
+
+
+
 # ═══════════════════════════════════════════════════════════════════════════
-# Seismological analysis — grid-based b-value, Mc, and rate maps
+# SeismoAnalysis — gridded seismicity analysis
 # ═══════════════════════════════════════════════════════════════════════════
 
 class SeismoAnalysis:
@@ -642,38 +720,33 @@ class SeismoAnalysis:
     """
 
     def __init__(self, events, lon_min, lon_max, lat_min, lat_max,
-                 grid_size=0.5, radius_km=50):
+                 grid_size=0.5, radius_km=50, jobs=1):
         self.events = [e for e in events
                        if e.latitude is not None and e.longitude is not None
                        and e.magnitude_value is not None
                        and e.depth_km is not None]
+        # Pre-store numpy arrays for vectorized distance computation
+        self._ev_lats = np.array([e.latitude for e in self.events])
+        self._ev_lons = np.array([e.longitude for e in self.events])
+        self._ev_mags = np.array([e.magnitude_value for e in self.events])
         self.lon_min = lon_min
         self.lon_max = lon_max
         self.lat_min = lat_min
         self.lat_max = lat_max
         self.grid_size = grid_size
         self.radius_km = radius_km
-
-    def _haversine_km(self, lat1, lon1, lat2, lon2):
-        """Great-circle distance in km between two points."""
-        dlat = math.radians(lat2 - lat1)
-        dlon = math.radians(lon2 - lon1)
-        a = (math.sin(dlat / 2) ** 2 +
-             math.cos(math.radians(lat1)) *
-             math.cos(math.radians(lat2)) *
-             math.sin(dlon / 2) ** 2)
-        return 6371.0 * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        self.jobs = jobs
 
     def _sample(self, clat, clon):
         """Return magnitudes of events within radius_km of (clat, clon)."""
-        mags = []
-        min_mag = []
-        for e in self.events:
-            if self._haversine_km(clat, clon, e.latitude, e.longitude) <= self.radius_km:
-                mags.append(e.magnitude_value)
-                if e.magnitude_value is not None:
-                    min_mag.append(e.magnitude_value)
-        return mags
+        if not len(self._ev_lats):
+            return np.array([])
+        dlat = np.radians(self._ev_lats - clat)
+        dlon = np.radians(self._ev_lons - clon)
+        cosa = np.cos(np.radians(clat)) * np.cos(np.radians(self._ev_lats))
+        a = np.sin(dlat / 2) ** 2 + cosa * np.sin(dlon / 2) ** 2
+        dists = 6371.0 * 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+        return self._ev_mags[dists <= self.radius_km]
 
     def _grid_coords(self):
         """Return 1-D arrays of grid centre lons and lats."""
@@ -691,103 +764,90 @@ class SeismoAnalysis:
         lat_edges = np.linspace(self.lat_min, self.lat_max, nlats + 1)
         return lon_edges, lat_edges
 
+    def _run_grid(self, mode, mc_hint=1.5, period_days=0):
+        """Run grid computation, optionally in parallel."""
+        lons, lats = self._grid_coords()
+        nlons, nlats = len(lons), len(lats)
+        values = np.full((nlats, nlons), np.nan)
+
+        min_events = 10 if mode == 'bvalue' else (15 if mode == 'mc' else 5)
+        bin_width = 0.1
+
+        if mode == 'rate':
+            if period_days > 0:
+                norm_days = period_days
+            else:
+                etimes = [e.origin_time for e in self.events
+                          if e.origin_time is not None]
+                if len(etimes) < 2:
+                    norm_days = 365.25
+                else:
+                    tspan = seiscomp.core.TimeSpan(max(etimes) - min(etimes))
+                    norm_days = max(1.0, tspan.seconds() / 86400.0)
+            years = norm_days / 365.25
+            area_km2 = math.pi * self.radius_km ** 2
+        else:
+            norm_days = 0
+            years = 0
+            area_km2 = 0
+
+        tasks = []
+        for j, lat in enumerate(lats):
+            for i, lon in enumerate(lons):
+                tasks.append((lat, lon, self.radius_km,
+                              self._ev_lats, self._ev_lons, self._ev_mags,
+                              mode, mc_hint, bin_width, min_events,
+                              norm_days, area_km2, years))
+
+        n_jobs = cpu_count() if self.jobs == 0 else self.jobs
+        if n_jobs > 1:
+            seiscomp.logging.debug("      parallelising %d cells over %d workers"
+                                   % (len(tasks), n_jobs))
+            with Pool(n_jobs) as pool:
+                results = pool.map(_grid_cell_task, tasks)
+        else:
+            results = [_grid_cell_task(t) for t in tasks]
+
+        idx = 0
+        for j in range(nlats):
+            for i in range(nlons):
+                values[j, i] = results[idx]
+                idx += 1
+
+        valid = np.isfinite(values).sum()
+        seiscomp.logging.debug("      → %d / %d cells have %s values"
+                               % (valid, values.size, mode))
+        return lons, lats, values
+
     # ── b-value (Aki-Utsu MLE) ─────────────────────────────────────────
 
     def bvalue_map(self, mc_hint=1.5):
         """Maximum-likelihood b-value on a grid."""
         seiscomp.logging.debug("      computing b-value (Mc ≥ %.1f) ..." % mc_hint)
-        lons, lats = self._grid_coords()
-        nlons, nlats = len(lons), len(lats)
-        values = np.full((nlats, nlons), np.nan)
-        min_events = 10
-
-        for j, lat in enumerate(lats):
-            for i, lon in enumerate(lons):
-                mags = np.array(self._sample(lat, lon))
-                mags = mags[mags >= mc_hint]
-                if len(mags) >= min_events:
-                    values[j, i] = math.log10(math.e) / (mags.mean() - mc_hint)
-
-        valid = np.isfinite(values).sum()
-        seiscomp.logging.debug("      → %d / %d cells have b-values"
-                               % (valid, values.size))
-        return lons, lats, values
+        return self._run_grid('bvalue', mc_hint=mc_hint)
 
     # ── Magnitude completeness (MAXC) ───────────────────────────────────
 
     def mc_map(self):
         """Maximum-curvature Mc on a grid."""
         seiscomp.logging.debug("      computing Mc (MAXC) ...")
-        lons, lats = self._grid_coords()
-        nlons, nlats = len(lons), len(lats)
-        values = np.full((nlats, nlons), np.nan)
-        min_events = 15
-        bin_width = 0.1
-
-        for j, lat in enumerate(lats):
-            for i, lon in enumerate(lons):
-                mags = np.array(self._sample(lat, lon))
-                if len(mags) < min_events:
-                    continue
-                m_min = np.floor(mags.min() / bin_width) * bin_width
-                m_max = np.ceil(mags.max() / bin_width) * bin_width
-                if m_max <= m_min:
-                    continue
-                bins = np.arange(m_min, m_max + bin_width, bin_width)
-                hist, edges = np.histogram(mags, bins=bins)
-                if len(hist) == 0:
-                    continue
-                idx = np.argmax(hist)
-                values[j, i] = (edges[idx] + edges[idx + 1]) / 2 + 0.2
-
-        valid = np.isfinite(values).sum()
-        seiscomp.logging.debug("      → %d / %d cells have Mc values"
-                               % (valid, values.size))
-        return lons, lats, values
+        return self._run_grid('mc')
 
     # ── Seismicity rate ─────────────────────────────────────────────────
 
     def rate_map(self, mc_hint=1.5, period_days=0):
-        """Seismicity rate per km² above *mc_hint* on a grid.
-
-        If *period_days* > 0 the rate is normalised to that many days
-        (e.g. 7 = events/km²/week).  Zero means auto‑detect from the
-        catalogue time span (→ annual rate).
-        """
+        """Seismicity rate per km² above *mc_hint* on a grid."""
         seiscomp.logging.debug("      computing rate (M ≥ %.1f) ..." % mc_hint)
-        lons, lats = self._grid_coords()
-        nlons, nlats = len(lons), len(lats)
-        values = np.full((nlats, nlons), np.nan)
-
-        # Normalisation period
         if period_days > 0:
-            norm_days = period_days
-            seiscomp.logging.debug("      → normalising to %d days" % norm_days)
+            seiscomp.logging.debug("      → normalising to %d days" % period_days)
         else:
             etimes = [e.origin_time for e in self.events
                       if e.origin_time is not None]
-            if len(etimes) < 2:
-                norm_days = 365.25
-            else:
+            if len(etimes) >= 2:
                 tspan = seiscomp.core.TimeSpan(max(etimes) - min(etimes))
-                norm_days = max(1.0, tspan.seconds() / 86400.0)
-            seiscomp.logging.debug("      → catalogue span: %.1f days" % norm_days)
-
-        years = norm_days / 365.25
-
-        area_km2 = math.pi * self.radius_km ** 2
-
-        for j, lat in enumerate(lats):
-            for i, lon in enumerate(lons):
-                mags = np.array(self._sample(lat, lon))
-                mags = mags[mags >= mc_hint]
-                if len(mags) >= 5:
-                    values[j, i] = len(mags) / (area_km2 * years)
-
-        valid = np.isfinite(values).sum()
-        seiscomp.logging.debug("      → %d / %d cells have rate values"
-                               % (valid, values.size))
-        return lons, lats, values
+                cd = max(1.0, tspan.seconds() / 86400.0)
+                seiscomp.logging.debug("      → catalogue span: %.1f days" % cd)
+        return self._run_grid('rate', mc_hint=mc_hint, period_days=period_days)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -891,7 +951,7 @@ class MapBuilder:
             self._draw_inset(fig, lon_min, lon_max, lat_min, lat_max)
 
         seiscomp.logging.debug("  render      : saving to %s ..." % output_path)
-        fig.savefig(output_path, dpi=dpi, bbox_inches='tight',
+        fig.savefig(output_path, dpi=dpi,
                     facecolor='white', edgecolor='none', pad_inches=0.2)
         plt.close(fig)
         seiscomp.logging.info("Map saved to %s" % output_path)
@@ -922,17 +982,13 @@ class MapBuilder:
             margin = 90
             seiscomp.logging.debug("  extent src  : fallback (0,0) margin=90°")
 
-        dlat = dlon = margin
-        dims = config['dimension']
-        aspect = dims[0] / max(1, dims[1])
-        dlon = dlat * aspect
-
-        return (center_lon - dlon, center_lon + dlon,
-                center_lat - dlat, center_lat + dlat)
+        return (center_lon - margin, center_lon + margin,
+                center_lat - margin, center_lat + margin)
 
     def _draw_basemap(self, ax):
         cfg = self.config
-        if cfg.get('use_osm', False):
+        tile_source = cfg.get('tile_source')
+        if tile_source:
             dims = cfg['dimension']
             extent = ax.get_extent()
             dlon = extent[1] - extent[0]
@@ -940,9 +996,9 @@ class MapBuilder:
                 dlon = 360
             zoom = int(math.log2(360 * dims[0] / (256 * dlon)))
             zoom = max(0, min(zoom, 19))
-            seiscomp.logging.debug("  osm tiles   : zoom=%d (dlon=%.2f° px=%d)"
-                                   % (zoom, dlon, dims[0]))
-            tiler = cimgt.OSM()
+            seiscomp.logging.debug("  raster tiles: source=%s zoom=%d (dlon=%.2f° px=%d)"
+                                   % (tile_source, zoom, dlon, dims[0]))
+            tiler = TileSource(TILE_SOURCES[tile_source], tile_source)
             ax.add_image(tiler, zoom, zorder=0, interpolation='bilinear')
             return
 
@@ -988,6 +1044,9 @@ class MapBuilder:
         n_plotted = 0
         n_skipped = 0
 
+        groups = {}
+        labels = []
+
         for se in self.events:
             if se.latitude is None or se.longitude is None:
                 n_skipped += 1
@@ -1009,28 +1068,39 @@ class MapBuilder:
                                max_size=cfg.get('max_marker_size', 450))
 
             edge_lw = 0.35 if marker not in ('*',) else 0.6
-            ax.plot(se.longitude, se.latitude,
-                    marker=marker, markersize=math.sqrt(size) / 2.0,
-                    markerfacecolor=face_color if marker != '*' else 'none',
-                    markeredgecolor=cfg.get('marker_edge', '#333333'),
-                    markeredgewidth=edge_lw,
-                    alpha=cfg.get('marker_alpha', 0.92),
-                    linestyle='none', transform=proj, zorder=7,
-                    clip_on=True)
+            key = (marker, edge_lw)
+            if key not in groups:
+                groups[key] = {'lons': [], 'lats': [],
+                               'sizes': [], 'colors': []}
+            groups[key]['lons'].append(se.longitude)
+            groups[key]['lats'].append(se.latitude)
+            groups[key]['sizes'].append(size)
+            groups[key]['colors'].append(face_color)
 
             if mag > 0 and cfg.get('show_labels', True):
-                label = f'M{mag:.1f}'
-                ax.annotate(label, (se.longitude, se.latitude),
-                            textcoords='offset points',
-                            xytext=(3, 3), fontsize=5, color='#555555',
-                            alpha=0.75, zorder=8, clip_on=True,
-                            bbox=dict(boxstyle='round,pad=0.08',
-                                      facecolor='white', alpha=0.55, lw=0))
+                labels.append((se.longitude, se.latitude, f'M{mag:.1f}'))
 
             group_name = _group_name_for_type(se.event_type)
             if group_name:
                 self._plotted_type_groups.add(group_name)
             n_plotted += 1
+
+        for (marker, edge_lw), data in groups.items():
+            fc = 'none' if marker == '*' else data['colors']
+            ax.scatter(data['lons'], data['lats'],
+                       s=np.array(data['sizes']) * math.pi / 16,
+                       c=fc, marker=marker,
+                       edgecolors='#333333', linewidths=edge_lw,
+                       alpha=cfg.get('marker_alpha', 0.92),
+                       transform=proj, zorder=7, clip_on=True)
+
+        for lon, lat, label in labels:
+            ax.annotate(label, (lon, lat),
+                        textcoords='offset points',
+                        xytext=(3, 3), fontsize=5, color='#555555',
+                        alpha=0.75, zorder=8, clip_on=True,
+                        bbox=dict(boxstyle='round,pad=0.08',
+                                  facecolor='white', alpha=0.55, lw=0))
 
         seiscomp.logging.debug("    → plotted %d markers, %d skipped (no coords)"
                                % (n_plotted, n_skipped))
@@ -1045,7 +1115,8 @@ class MapBuilder:
 
         analysis = SeismoAnalysis(
             self.events, lon_min, lon_max, lat_min, lat_max,
-            grid_size=grid_size, radius_km=radius_km)
+            grid_size=grid_size, radius_km=radius_km,
+            jobs=config.get('jobs', 1))
 
         seiscomp.logging.debug("Running %s analysis (grid=%.2f°, r=%d km) ..."
                                % (mode, grid_size, radius_km))
@@ -1581,6 +1652,15 @@ class MapBuilder:
         n_placed = 0
         placed = []
 
+        # Maximum possible margin across all labels, used as spatial grid
+        # cell size so any collision is within ±1 cell.
+        max_name_len = max((len(c[0]) for c in cities), default=10)
+        max_text_w = max_name_len * char_deg_lon * (8.0 / 6.0) * spacing
+        max_text_h = char_deg_lat * (8.0 / 6.0) * spacing
+        cell_size = max(max_text_h * 1.8 * density_mult,
+                        max_text_w * 1.3 * density_mult) or 0.1
+        grid = {}
+
         for name, lat, lon, pop, is_capital in cities:
             if is_capital:
                 fs = 8.0
@@ -1596,14 +1676,26 @@ class MapBuilder:
             min_lon_margin = text_w_deg * 1.3 * density_mult
 
             too_close = False
-            for px, py in placed:
-                if (abs(lat - py) < min_lat_margin and
-                        abs(lon - px) < min_lon_margin):
-                    too_close = True
+            cx = int(math.floor(lon / cell_size))
+            cy = int(math.floor(lat / cell_size))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    cell = grid.get((cx + dx, cy + dy))
+                    if cell:
+                        for px, py in cell:
+                            if (abs(lat - py) < min_lat_margin and
+                                    abs(lon - px) < min_lon_margin):
+                                too_close = True
+                                break
+                        if too_close:
+                            break
+                if too_close:
                     break
             if too_close:
                 continue
 
+            key = (cx, cy)
+            grid.setdefault(key, []).append((lon, lat))
             placed.append((lon, lat))
             n_placed += 1
 
@@ -1974,6 +2066,7 @@ class ScmapApp(seiscomp.client.Application):
         self._start_time = None
         self._end_time = None
         self._limit = 0
+        self._jobs = 0
 
     def createCommandLineDescription(self):
         try:
@@ -2073,11 +2166,16 @@ class ScmapApp(seiscomp.client.Application):
                 "of vector features. Events and overlays are plotted on top "
                 "of the OSM layer."
             )
+            self.commandline().addOption(
+                "Map", "topo",
+                "Use OpenTopoMap raster tiles (topographic with contours). "
+                "Alternative to --osm, faster server, better for seismology."
+            )
 
             self.commandline().addGroup("Display")
             self.commandline().addStringOption(
                 "Display", "mode",
-                "Map mode: events (default), bvalue, mc, rate, or wadati."
+                "Map mode: events (default), bvalue, mc, rate, wadati, or all."
             )
             self.commandline().addStringOption(
                 "Display", "grid-size",
@@ -2101,6 +2199,11 @@ class ScmapApp(seiscomp.client.Application):
                 "Display", "velocity-model",
                 "SeisComP travel-time table profile for theoretical Wadati "
                 "diagram (e.g. iasp91, tab). Only used with --mode wadati."
+            )
+            self.commandline().addStringOption(
+                "Display", "jobs",
+                "Number of parallel workers for grid computation "
+                "(default: 1 = sequential).  Set to 0 for all CPUs."
             )
             self.commandline().addOption(
                 "Display", "no-legend",
@@ -2175,6 +2278,12 @@ class ScmapApp(seiscomp.client.Application):
         except (RuntimeError, ValueError):
             self._limit = 0
 
+        try:
+            jobs_s = self.commandline().optionString("jobs")
+            self._jobs = int(jobs_s) if jobs_s else 0
+        except (RuntimeError, ValueError):
+            self._jobs = 0
+
         # File input overrides everything; disable database in that case
         if self._input_file:
             self.setDatabaseEnabled(False, False)
@@ -2219,8 +2328,9 @@ Analysis modes (--mode):
   events          Individual event markers (default)
   bvalue          Gutenberg-Richter b-value heatmap
   mc              Magnitude of completeness heatmap (MAXC)
-            rate            Annual seismicity rate per km²
-  wadati          Wadati diagram for Vp/Vs estimation""")
+  rate            Annual seismicity rate per km²
+  wadati          Wadati diagram for Vp/Vs estimation
+  all             Generate all four map modes in a single pass""")
         print()
 
         seiscomp.client.Application.printUsage(self)
@@ -2295,7 +2405,30 @@ Examples:
                 "No events found in input. Map will be empty.")
 
         builder = MapBuilder(events, config, metadata=metadata)
-        builder.build(output)
+
+        mode = config.get('mode', 'events')
+        if mode == 'all':
+            sub_modes = ['events', 'bvalue', 'mc', 'rate']
+            title_base = config.get('title', '')
+            for sub_mode in sub_modes:
+                base, ext = os.path.splitext(output)
+                sub_output = f"{base}_{sub_mode}{ext}"
+                config['mode'] = sub_mode
+                if sub_mode == 'events':
+                    config['title'] = (f"Seismicity  {title_base}"
+                                      if title_base else 'Seismicity')
+                elif sub_mode == 'bvalue':
+                    config['title'] = f"b‑value  {title_base}" if title_base else 'b‑value'
+                elif sub_mode == 'mc':
+                    config['title'] = (f"Magnitude of Completeness  {title_base}"
+                                       if title_base else 'Magnitude of Completeness')
+                elif sub_mode == 'rate':
+                    config['title'] = (f"Seismicity Rate  {title_base}"
+                                       if title_base else 'Seismicity Rate')
+                seiscomp.logging.info("All-mode: generating %s → %s" % (sub_mode, sub_output))
+                builder.build(sub_output)
+        else:
+            builder.build(output)
         return True
 
     # ── helpers ─────────────────────────────────────────────────────────
@@ -2347,7 +2480,7 @@ Examples:
             'show_labels': not self._has_flag("no-labels"),
             'show_rivers': self._has_flag("show-rivers"),
             'show_states': self._has_flag("show-states"),
-            'show_cities': not self._has_flag("no-cities") and not self._has_flag("osm"),
+            'show_cities': not self._has_flag("no-cities") and not self._has_flag("osm") and not self._has_flag("topo"),
             'min_city_population': int(self._opt_float("min-city-population", 100000) or 100000),
             'city_spacing': self._opt_float("city-spacing", 1.0) or 1.0,
             'title': self._opt_str("title"),
@@ -2357,7 +2490,8 @@ Examples:
             'mc_hint': self._opt_float("mc-hint", 1.5) or 1.5,
             'rate_period': int(self._opt_float("rate-period", 0) or 0),
             'velocity_model': self._opt_str("velocity-model"),
-            'use_osm': self._has_flag("osm"),
+            'tile_source': 'topo' if self._has_flag("topo") else ('osm' if self._has_flag("osm") else None),
+            'jobs': self._jobs,
         }
 
         region = self._opt_str("region")

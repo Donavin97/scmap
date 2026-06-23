@@ -2,6 +2,7 @@
 set -euo pipefail
 
 # scmap-all — generate all four map modes for a region in one pass.
+# Log written to $OUTDIR/scmap-all.log (with -vvvv verbosity).
 #
 # Usage:
 #   ./scmap-all.sh "2026-06-10" "2026-06-18"             # explicit start/end
@@ -9,6 +10,7 @@ set -euo pipefail
 #   ./scmap-all.sh -d 7                                   # last 7 days
 #   ./scmap-all.sh -d 30                                  # last 30 days
 #   ./scmap-all.sh --osm -d 7                              # OSM tiles, last 7 days
+#   ./scmap-all.sh --topo -d 7                             # OpenTopoMap tiles
 #   ./scmap-all.sh --osm "2026-06-10" "2026-06-18"         # OSM tiles, date range
 #
 # Customise the region and database below, or override via environment:
@@ -20,6 +22,7 @@ LON="${LON:-25}"
 MARGIN="${MARGIN:-8}"
 DB="${DB:-localhost:18002/seiscomp}"
 OUTDIR="${OUTDIR:-.}"
+JOBS="${JOBS:-0}"
 CITY_POP="${CITY_POP:-50000}"
 GRID_SIZE="${GRID_SIZE:-1.5}"
 GRID_RADIUS="${GRID_RADIUS:-300}"
@@ -28,20 +31,43 @@ RATE_PERIOD="${RATE_PERIOD:-0}"
 USE_OSM="${USE_OSM:-}"
 
 # ── parse flags ─────────────────────────────────────────────────────────
-OSM_FLAG=""
-ARGS=()
-for arg in "$@"; do
-    if [ "$arg" = "--osm" ]; then
-        OSM_FLAG="--osm"
-    else
-        ARGS+=("$arg")
-    fi
+TILE_FLAG=""
+DEBUG_FLAG=""
+PASSTHRU=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --osm)
+            TILE_FLAG="--osm"
+            shift
+            ;;
+        --topo)
+            TILE_FLAG="--topo"
+            shift
+            ;;
+        --jobs)
+            JOBS="${2:?missing value for --jobs}"
+            shift 2
+            ;;
+        --debug)
+            DEBUG_FLAG="--debug"
+            shift
+            ;;
+        --)
+            shift
+            PASSTHRU+=("$@")
+            break
+            ;;
+        *)
+            PASSTHRU+=("$1")
+            shift
+            ;;
+    esac
 done
-# Also support USE_OSM=1 env var
-if [ "${USE_OSM:-}" = "1" ]; then
-    OSM_FLAG="--osm"
+# Also support USE_OSM=1 env var (legacy)
+if [ "${USE_OSM:-}" = "1" ] && [ -z "$TILE_FLAG" ]; then
+    TILE_FLAG="--osm"
 fi
-set -- "${ARGS[@]}"
+set -- "${PASSTHRU[@]}"
 
 # ── parse time arguments ───────────────────────────────────────────────
 if [ $# -eq 0 ]; then
@@ -69,56 +95,24 @@ echo "  database : $DB"
 echo "  output   : $OUTDIR"
 echo "======================================================"
 
-# ── event map ───────────────────────────────────────────────────────────
-echo "[1/4] event map ..."
+# ── all four maps in a single pass ────────────────────────────────────
+echo "Generating all 4 maps in a single pass ..."
 python3 "$(dirname "$0")/scmap.py" \
     -d "$DB" \
-    $OSM_FLAG \
+    $TILE_FLAG $DEBUG_FLAG \
+    -vvvv \
+    --log-file="$OUTDIR/scmap-all.log" \
     --start-time "$START_TIME" --end-time "$END_TIME" \
     --lat "$LAT" --lon "$LON" -m "$MARGIN" \
-    --min-city-population "$CITY_POP" \
-    -o "$OUTDIR/map_events.png" \
-    --title "Seismicity  $LABEL"
-
-# ── b‑value ────────────────────────────────────────────────────────────
-echo "[2/4] b‑value map ..."
-python3 "$(dirname "$0")/scmap.py" \
-    -d "$DB" \
-    $OSM_FLAG \
-    --start-time "$START_TIME" --end-time "$END_TIME" \
-    --lat "$LAT" --lon "$LON" -m "$MARGIN" \
-    --mode bvalue --grid-size "$GRID_SIZE" --grid-radius "$GRID_RADIUS" \
-    --mc-hint "$MC_HINT" \
-    --min-city-population 100000 \
-    -o "$OUTDIR/map_bvalue.png" \
-    --title "b‑value  $LABEL"
-
-# ── magnitude of completeness ───────────────────────────────────────────
-echo "[3/4] Mc map ..."
-python3 "$(dirname "$0")/scmap.py" \
-    -d "$DB" \
-    $OSM_FLAG \
-    --start-time "$START_TIME" --end-time "$END_TIME" \
-    --lat "$LAT" --lon "$LON" -m "$MARGIN" \
-    --mode mc --grid-size "$GRID_SIZE" --grid-radius "$GRID_RADIUS" \
-    --min-city-population 100000 \
-    -o "$OUTDIR/map_mc.png" \
-    --title "Magnitude of Completeness  $LABEL"
-
-# ── rate ────────────────────────────────────────────────────────────────
-echo "[4/4] rate map ..."
-python3 "$(dirname "$0")/scmap.py" \
-    -d "$DB" \
-    $OSM_FLAG \
-    --start-time "$START_TIME" --end-time "$END_TIME" \
-    --lat "$LAT" --lon "$LON" -m "$MARGIN" \
-    --mode rate --grid-size "$GRID_SIZE" --grid-radius "$GRID_RADIUS" \
+    --mode all \
+    --grid-size "$GRID_SIZE" --grid-radius "$GRID_RADIUS" \
     --mc-hint "$MC_HINT" \
     --rate-period "$RATE_PERIOD" \
-    --min-city-population 100000 \
-    -o "$OUTDIR/map_rate.png" \
-    --title "Seismicity Rate  $LABEL"
+    --min-city-population "$CITY_POP" \
+    -o "$OUTDIR/map.png" \
+    --title "$LABEL" \
+    --jobs "$JOBS"
 
 echo ""
 echo "=== done ==="
-ls -lh "$OUTDIR"/map_{events,bvalue,mc,rate}.png
+ls -lh "$OUTDIR"/map_{events,bvalue,mc,rate}.png "$OUTDIR"/scmap-all.log
