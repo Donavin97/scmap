@@ -1,5 +1,3 @@
-__pycache__/
-*.pyc
-*.pyo
-*.log
-.DS_Store
+certs/*-key.pem
+certs/*-req.pem
+certs/*.srl

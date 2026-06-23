@@ -84,6 +84,137 @@ TILE_SOURCES = {
     'topo': 'https://tile.opentopomap.org/{z}/{x}/{y}.png',
 }
 
+# ── License verification ───────────────────────────────────────────────────
+# scmap CA certificate — used to verify customer license certificates.
+# Keep scmap-ca-key.pem secret; the CA cert below is public.
+SCMAP_CA_CERT_PEM = b"""-----BEGIN CERTIFICATE-----
+MIIFfTCCA2WgAwIBAgIUG6UFe1Gk4fgC7RDGpyuheWfN7lowDQYJKoZIhvcNAQEL
+BQAwTjEOMAwGA1UECgwFc2NtYXAxGTAXBgNVBAMMEHNjbWFwIExpY2Vuc2UgQ0Ex
+ITAfBgkqhkiG9w0BCQEWEmxpY2Vuc2VzQHNjbWFwLmRldjAeFw0yNjA2MjMxNzQ2
+MzVaFw0zNjA2MjAxNzQ2MzVaME4xDjAMBgNVBAoMBXNjbWFwMRkwFwYDVQQDDBBz
+Y21hcCBMaWNlbnNlIENBMSEwHwYJKoZIhvcNAQkBFhJsaWNlbnNlc0BzY21hcC5k
+ZXYwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQCpC25BmFlB7YUvVoZU
+DeryO6PKWpdE2dmdbMvnh1SX9M6vZo6OZV3+YxL2VsD0BsaIzPTbybEiGs+lo6XN
+6QKVCv61DEFZnitq9f8lSANkPQ0JnTWT1ECFFjylI5Kic7uEuPR8xFUA/pIsjq/K
+V+ArG1VT7xBmPEteEP5RY5wVJ55nAv84PdTVaqD9biIcGpLIrQG35EF0TxcVfCKd
+74oe8U/sQWAcbN4R/1KG2xTNPuLJNP1gCJ5fSkdXJplp8mNKrbewIxD+Ixfh7QKE
+nbffWdej0RnKipPdjXIheD77nEJyNRd337EYnaBzJtoAJP8herCxqnAs1J9m2hY2
+YjPgn03+U54C+M3wDy4Z1yPPzOhjfUFT0ZHqb9KoBx9e1bYZx6ZNOEintRBayXcI
+kdrwxezL65jYI2HZGjtekfWakvp3EDY6Xu4pfOVQzrYAWMDtrAkdc49qmq0IrmyK
+fX/Wj5RDvyB3MF/4+G4lGvfO6z19QhYUdVtz6nBxdiULokPsJ4upi9Vcf6XdSQv8
+HBJ/MaCDxPIU1SvWR1MB+2B/SGo3YFGg/usG5XuwUtEE7A3m8q9GIxkqmb32VyBi
+lZQEtxqnsAh+0x6xFEHEyYarWMZcf3YQHwFXiQX6FMqlibnTF1sSpU1K+oNdiBx1
+hqwkTcNRyBwdINKZIINtBDiEfQIDAQABo1MwUTAdBgNVHQ4EFgQUE4oeOqQxcF0J
+2P4UmG1ETwThrl8wHwYDVR0jBBgwFoAUE4oeOqQxcF0J2P4UmG1ETwThrl8wDwYD
+VR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAgEAENqO/bhs5MSN8Afl3lmC
+JlJvDt7/SSb2R+GCJxzjrOCBYBeMDA39Ytxc8+w2jb+Nammjkrrrgfw/cV0bfVq4
+0h3yuRHGV6KIux7fQ96Gzyv3IRsfL8I0jqQ6GISw0HMJvDnQG382ocRwLYHTxHvt
+1zuwON19AKMAMmN9I+1ag4HhhkeT7OeZ/2ElOjDqaQYdEsA4Sx5puqqan2qv6p5Z
+gmuF7OLAzghK4MbS/u+5JU9YeZJtfFgsjKnllOiIWU5PswvU9ti7ORRt5AM9+JvW
+O7iWmnXhP3P0Jisd4T/jmawXf3t5xGZNnMn5DvRop0bcx+L3xw/89+qLRnN0/79E
+reWXmRKTMVHzloUOgj+OEelJNCPTAVYDgaXqL01ytO/k6frgZeNLejmig4DQ7jyX
+yn0tV1pWVAzE9/h+18InP7DJL7dXadynSmDWT61Q6vfFopghYzdq4wKklQqhloPc
+W6x5oqxRhPfndv74fJol1ZhLp6SOI92mX31Dt175Vi+RpERVGIMAG4I0trTAt0dZ
+jdgRo8nX5dNgpnHEA7+tbOIW3AgSk2opkmusdr/3nY3rqwylfPk6yHb9K0PaegT2
+orQ4XUk0Ob1QqC4vjIuhLQE0bzDnetsSYONzBE+Kpb0xNNlgdvId6lpP6EqZhyLJ
+lreBz//nR3mopibEgcPKNbk=
+-----END CERTIFICATE-----
+"""
+
+
+class LicenseManager:
+    """Verifies scmap license certificates against the embedded CA."""
+
+    _SEARCH_PATHS = [
+        os.path.join(os.path.expanduser('~'), '.seiscomp', 'licenses'),
+        os.path.join(os.path.expanduser('~'), 'seiscomp', 'share', 'licenses'),
+        os.path.join(os.sep, 'home', 'seismocomp', 'seiscomp', 'share', 'licenses'),
+        os.path.dirname(os.path.abspath(__file__)),
+    ]
+
+    def __init__(self):
+        self._customer = None
+        self._valid = False
+        self._error = None
+        self._load_and_verify()
+
+    def _load_and_verify(self):
+        try:
+            from cryptography import x509
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import padding
+            from cryptography.hazmat.backends import default_backend
+            from cryptography.exceptions import InvalidSignature
+        except ImportError:
+            self._error = 'cryptography library not available'
+            return
+
+        ca_cert = x509.load_pem_x509_certificate(SCMAP_CA_CERT_PEM, default_backend())
+        ca_pub_key = ca_cert.public_key()
+
+        cert_path = self._find_cert()
+
+        if cert_path is None:
+            self._error = 'no scmap.crt found in search paths'
+            return
+
+        try:
+            with open(cert_path, 'rb') as f:
+                cert = x509.load_pem_x509_certificate(f.read(), default_backend())
+        except Exception as e:
+            self._error = f'failed to load certificate: {e}'
+            return
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if now < cert.not_valid_before:
+            self._error = f'certificate not yet valid (valid from {cert.not_valid_before})'
+            return
+        if now > cert.not_valid_after:
+            self._error = f'certificate expired ({cert.not_valid_after})'
+            return
+
+        try:
+            ca_pub_key.verify(
+                cert.signature,
+                cert.tbs_certificate_bytes,
+                padding.PKCS1v15(),
+                cert.signature_hash_algorithm,
+            )
+        except InvalidSignature:
+            self._error = 'certificate signature invalid'
+            return
+        except Exception as e:
+            self._error = f'signature verification error: {e}'
+            return
+
+        try:
+            cn = cert.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)
+            self._customer = cn[0].value if cn else 'Unknown'
+        except Exception:
+            self._customer = 'Unknown'
+
+        self._valid = True
+
+    def _find_cert(self):
+        for path in self._SEARCH_PATHS:
+            candidate = os.path.join(path, 'scmap.crt')
+            if os.path.isfile(candidate):
+                return candidate
+        return None
+
+    @property
+    def is_licensed(self):
+        return self._valid
+
+    @property
+    def customer_name(self):
+        return self._customer
+
+    @property
+    def error(self):
+        return self._error
+
+
 # ── SeisComP Python bindings ──────────────────────────────────────────────
 import seiscomp.client
 import seiscomp.io
@@ -950,12 +1081,35 @@ class MapBuilder:
             seiscomp.logging.debug("  inset map   : drawing ...")
             self._draw_inset(fig, lon_min, lon_max, lat_min, lat_max)
 
+        if not config.get('licensed', False):
+            seiscomp.logging.debug("  watermark   : drawing ...")
+            self._draw_watermark(fig)
+
         seiscomp.logging.debug("  render      : saving to %s ..." % output_path)
         fig.savefig(output_path, dpi=dpi,
                     facecolor='white', edgecolor='none', pad_inches=0.2)
         plt.close(fig)
         seiscomp.logging.info("Map saved to %s" % output_path)
         print(f"Map saved to {output_path}")
+
+    def _draw_watermark(self, fig):
+        """Draw a semi-transparent 'UNLICENSED' watermark across the map."""
+        w, h = fig.get_size_inches()
+        props = dict(alpha=0.18, fontsize=38, fontweight='bold',
+                     color='#222222', ha='center', va='center',
+                     rotation=-28, family='sans-serif',
+                     clip_on=False)
+
+        stride = 2.2
+        for y in np.arange(-h * 0.5, h * 1.5, stride):
+            for x in np.arange(-w * 0.5, w * 1.5, stride * 1.6):
+                fig.text(x / w, y / h, 'UNLICENSED', **props)
+
+        fig.text(0.5, 0.015,
+                 'UNLICENSED  \u00b7  Purchase license for publication rights',
+                 transform=fig.transFigure, alpha=0.65, fontsize=7,
+                 color='#cc3333', ha='center', va='bottom',
+                 fontweight='bold', family='sans-serif')
 
     def _compute_extent(self):
         config = self.config
@@ -2403,6 +2557,16 @@ Examples:
         if not events:
             seiscomp.logging.warning(
                 "No events found in input. Map will be empty.")
+
+        config['license'] = LicenseManager()
+        config['licensed'] = config['license'].is_licensed
+        if config['licensed']:
+            seiscomp.logging.info(
+                "Licensed to %s" % config['license'].customer_name)
+        else:
+            seiscomp.logging.warning(
+                "UNLICENSED — watermark will be applied (%s)"
+                % (config['license'].error or 'no license found'))
 
         builder = MapBuilder(events, config, metadata=metadata)
 
