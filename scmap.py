@@ -215,6 +215,13 @@ class LicenseManager:
         return self._error
 
 
+def _is_licensed(license_mgr=None):
+    """Re-verify at call site — no cached boolean to tamper with."""
+    if license_mgr is None:
+        return False
+    return license_mgr.is_licensed
+
+
 # ── SeisComP Python bindings ──────────────────────────────────────────────
 import seiscomp.client
 import seiscomp.io
@@ -1081,9 +1088,7 @@ class MapBuilder:
             seiscomp.logging.debug("  inset map   : drawing ...")
             self._draw_inset(fig, lon_min, lon_max, lat_min, lat_max)
 
-        if not config.get('licensed', False):
-            seiscomp.logging.debug("  watermark   : drawing ...")
-            self._draw_watermark(fig)
+        self._check_watermark(fig)
 
         seiscomp.logging.debug("  render      : saving to %s ..." % output_path)
         fig.savefig(output_path, dpi=dpi,
@@ -1092,8 +1097,16 @@ class MapBuilder:
         seiscomp.logging.info("Map saved to %s" % output_path)
         print(f"Map saved to {output_path}")
 
-    def _draw_watermark(self, fig):
-        """Draw a semi-transparent 'UNLICENSED' watermark across the map."""
+    def _check_watermark(self, fig):
+        """Verify license independently and draw watermark if unlicensed."""
+        if _is_licensed(self.config.get('license')):
+            return
+        seiscomp.logging.debug("  watermark   : drawing ...")
+        self._draw_watermark(fig)
+
+    @staticmethod
+    def _draw_watermark(fig):
+        """Apply semi-transparent 'UNLICENSED' watermark across the map."""
         w, h = fig.get_size_inches()
         props = dict(alpha=0.18, fontsize=38, fontweight='bold',
                      color='#222222', ha='center', va='center',
@@ -2558,15 +2571,15 @@ Examples:
             seiscomp.logging.warning(
                 "No events found in input. Map will be empty.")
 
-        config['license'] = LicenseManager()
-        config['licensed'] = config['license'].is_licensed
-        if config['licensed']:
+        _license_mgr = LicenseManager()
+        config['license'] = _license_mgr
+        if _license_mgr.is_licensed:
             seiscomp.logging.info(
-                "Licensed to %s" % config['license'].customer_name)
+                "Licensed to %s" % _license_mgr.customer_name)
         else:
             seiscomp.logging.warning(
                 "UNLICENSED — watermark will be applied (%s)"
-                % (config['license'].error or 'no license found'))
+                % (_license_mgr.error or 'no license found'))
 
         builder = MapBuilder(events, config, metadata=metadata)
 
