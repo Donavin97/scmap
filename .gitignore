@@ -1,3 +1,8 @@
+*.bak
 certs/*-key.pem
 certs/*-req.pem
 certs/*.srl
+linkedin.txt
+*.log
+*.png
+__pycache__/
