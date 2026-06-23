@@ -25,6 +25,9 @@ Usage:
     scmap -E smi:org.gfz-potsdam/event1 -d mysql://sysop:sysop@localhost/seiscomp -o map.png
 """
 
+__author__ = 'Donavin Liebgott'
+__email__ = 'donavinliebgott@gmail.com'
+
 import sys
 import os
 import math
@@ -269,13 +272,37 @@ def extract_events(ep):
             except Exception:
                 pass
 
+            # Build pick-time lookup for travel-time computation
+            pick_times = {}
+            for j in range(ep.pickCount()):
+                pk = ep.pick(j)
+                tq = pk.time()
+                if tq:
+                    pick_times[pk.publicID()] = tq.value()
+
             # Arrivals
             for k in range(org.arrivalCount()):
                 arr = org.arrival(k)
-                phase = _safe_str(arr, 'phase') or '?'
+                # Phase code (Phase object → string via .code())
+                phase = ''
+                try:
+                    ph = arr.phase()
+                    if ph is not None:
+                        phase = ph.code() or ''
+                except Exception:
+                    pass
                 dist = _safe_attr(arr, 'distance')
                 az = _safe_attr(arr, 'azimuth')
-                se.arrivals.append((phase, dist, az))
+                # Travel time from pick time - origin time
+                travel_time = None
+                pick_id = arr.pickID()
+                if pick_id and pick_id in pick_times and se.origin_time is not None:
+                    try:
+                        ts = pick_times[pick_id] - se.origin_time
+                        travel_time = ts.length()
+                    except Exception:
+                        pass
+                se.arrivals.append((phase, dist, az, travel_time))
             se.n_phases = len(se.arrivals)
 
         # Magnitude
@@ -798,6 +825,10 @@ class MapBuilder:
             seiscomp.logging.debug("  margin      : %.2f°" % margin)
         seiscomp.logging.debug("  n events    : %d" % len(self.events))
 
+        if mode == 'wadati':
+            self._draw_wadati_diagram(output_path, config)
+            return
+
         lon_min, lon_max, lat_min, lat_max = self._compute_extent()
         seiscomp.logging.debug("  extent lon  : [%.4f, %.4f]  span=%.2f°"
                                % (lon_min, lon_max, lon_max - lon_min))
@@ -1105,13 +1136,232 @@ class MapBuilder:
         if mode == 'rate' and period_days > 0:
             self._analysis_params.append('Period: %d d' % period_days)
 
+    def _draw_wadati_diagram(self, output_path, config):
+        """Generate a Wadati diagram for Vp/Vs estimation.
+
+        Plots S-P travel time against P travel time for each station
+        that recorded both phases. A linear fit gives the Vp/Vs ratio.
+
+        If --velocity-model is set, theoretical travel times from the
+        SeisComP travel-time table are overlaid for comparison.
+        """
+        seiscomp.logging.debug("── wadati diagram ────────────────────────────────")
+
+        tp_vals = []
+        tsp_vals = []
+        tp_theo = []
+        tsp_theo = []
+        tp_ponly = []
+        tsp_ponly = []
+
+        vel_model = config.get('velocity_model')
+        ttt = None
+        if vel_model:
+            try:
+                from seiscomp import seismology
+                ttt = seismology.TravelTimeTableInterface.Create("LOCSAT")
+                if ttt:
+                    ttt.setModel(vel_model)
+                    seiscomp.logging.info(
+                        "Wadati: using velocity model '%s' via LOCSAT" % vel_model)
+                else:
+                    seiscomp.logging.warning(
+                        "Wadati: TravelTimeTableInterface.Create('LOCSAT') "
+                        "returned None; cannot compute theoretical times")
+            except Exception as e:
+                seiscomp.logging.warning(
+                    "Wadati: failed to initialise travel-time table: %s" % e)
+
+        for se in self.events:
+            if not se.arrivals or se.latitude is None or se.origin_time is None:
+                continue
+            p_arr = [(d, a, t) for ph, d, a, t in se.arrivals
+                     if t is not None and d is not None
+                     and ph.upper().startswith('P')]
+            s_arr = [(d, a, t) for ph, d, a, t in se.arrivals
+                     if t is not None and d is not None
+                     and ph.upper().startswith('S')]
+
+            src_lat = se.latitude
+            src_lon = se.longitude
+            src_dep = se.depth_km if se.depth_km is not None else 0.0
+
+            # Track which P arrivals find an S match
+            matched_p = set()
+
+            for p_idx, (p_dist, p_az, p_tt) in enumerate(p_arr):
+                best = None
+                best_diff = 1e9
+                for s_dist, s_az, s_tt in s_arr:
+                    ddiff = abs(p_dist - s_dist)
+                    if ddiff < best_diff:
+                        best_diff = ddiff
+                        best = (s_tt, s_dist, s_az)
+                if best is not None and best_diff < 0.5:
+                    s_tt, s_dist, s_az = best
+                    az_diff = abs(p_az - s_az) if p_az is not None and s_az is not None else 0
+                    if az_diff < 10 or az_diff > 350:
+                        matched_p.add(p_idx)
+                        tp_vals.append(p_tt)
+                        tsp_vals.append(s_tt - p_tt)
+
+                        if ttt is not None and p_dist is not None:
+                            sta_lat, sta_lon = _az_dist_to_latlon(
+                                src_lat, src_lon, p_az, p_dist)
+                            try:
+                                tt_p = ttt.computeTime(
+                                    "P", src_lat, src_lon, src_dep,
+                                    sta_lat, sta_lon, 0.0, 1)
+                                tt_s = ttt.computeTime(
+                                    "S", src_lat, src_lon, src_dep,
+                                    sta_lat, sta_lon, 0.0, 1)
+                                if tt_p > 0 and tt_s > tt_p:
+                                    tp_theo.append(tt_p)
+                                    tsp_theo.append(tt_s - tt_p)
+                            except Exception:
+                                pass
+
+            # P-only arrivals: use theoretical S from velocity model
+            if ttt is not None:
+                for p_idx, (p_dist, p_az, p_tt) in enumerate(p_arr):
+                    if p_idx in matched_p:
+                        continue
+                    if p_dist is None or p_az is None:
+                        continue
+                    sta_lat, sta_lon = _az_dist_to_latlon(
+                        src_lat, src_lon, p_az, p_dist)
+                    try:
+                        tt_p = ttt.computeTime(
+                            "P", src_lat, src_lon, src_dep,
+                            sta_lat, sta_lon, 0.0, 1)
+                        tt_s = ttt.computeTime(
+                            "S", src_lat, src_lon, src_dep,
+                            sta_lat, sta_lon, 0.0, 1)
+                        if tt_p > 0 and tt_s > tt_p:
+                            tp_ponly.append(p_tt)
+                            tsp_ponly.append(tt_s - tt_p)
+                    except Exception:
+                        pass
+
+        tp = np.array(tp_vals)
+        tsp = np.array(tsp_vals)
+
+        mask = tsp > 0
+        tp = tp[mask]
+        tsp = tsp[mask]
+
+        n_pts = len(tp)
+        n_ponly = len(tp_ponly)
+        seiscomp.logging.debug("Wadati: %d paired points, %d P-only with model after filtering"
+                               % (n_pts, n_ponly))
+
+        dpi = config.get('dpi', 150)
+        fig, ax = plt.subplots(figsize=(9, 7), dpi=dpi, facecolor='white')
+
+        if n_pts < 4:
+            ax.text(0.5, 0.5, 'Insufficient paired P/S arrival data\n'
+                    'for Wadati diagram (need ≥ 4 points)',
+                    ha='center', va='center', fontsize=13,
+                    transform=ax.transAxes, color='#666666')
+            ax.set_title('Wadati Diagram — No Data', fontsize=13)
+            fig.savefig(output_path, dpi=dpi, bbox_inches='tight',
+                        facecolor='white', edgecolor='none')
+            plt.close(fig)
+            seiscomp.logging.warning(
+                "Wadati: insufficient data (%d points)" % n_pts)
+            return
+
+        A = np.vstack([tp, np.ones_like(tp)]).T
+        slope, intercept = np.linalg.lstsq(A, tsp, rcond=None)[0]
+        vp_vs = slope + 1.0
+
+        residuals = tsp - (intercept + slope * tp)
+        rmse = np.sqrt(np.mean(residuals ** 2))
+        r2 = 1 - np.sum(residuals ** 2) / np.sum((tsp - np.mean(tsp)) ** 2)
+
+        ax.scatter(tp, tsp, s=35, c='#2196F3', edgecolors='#1565C0',
+                   alpha=0.7, zorder=3, linewidths=0.5, label='Observed P/S pair')
+
+        x_fit = np.linspace(0, tp.max() * 1.1, 200)
+        y_fit = intercept + slope * x_fit
+        ax.plot(x_fit, y_fit, '--', color='#D32F2F', linewidth=2,
+                zorder=4, label='Linear fit')
+
+        if n_ponly > 0:
+            ax.scatter(tp_ponly, tsp_ponly, s=40, marker='s',
+                       c='none', edgecolors='#FF8F00', alpha=0.8,
+                       zorder=3, linewidths=1.0,
+                       label=r'P-only $\times$ model S–P (%d)' % n_ponly)
+
+        has_theo = len(tp_theo) > 0
+        if has_theo:
+            tp_t = np.array(tp_theo)
+            tsp_t = np.array(tsp_theo)
+            ax.scatter(tp_t, tsp_t, s=25, c='none', edgecolors='#2E7D32',
+                       alpha=0.8, zorder=3, linewidths=1.0,
+                       label='Theoretical (model)')
+            tp_t_sorted = np.sort(tp_t)
+            slope_t = (np.mean(tsp_t * tp_t) - np.mean(tsp_t) * np.mean(tp_t)) / \
+                      (np.mean(tp_t ** 2) - np.mean(tp_t) ** 2)
+            tsp_t_fit = slope_t * tp_t_sorted
+            ax.plot(tp_t_sorted, tsp_t_fit, '-', color='#2E7D32', linewidth=1.5,
+                    zorder=3, alpha=0.7,
+                    label=r'%s  $V_P/V_S = %.2f$' % (vel_model, slope_t + 1))
+            vp_vs_model = slope_t + 1.0
+        else:
+            vp_vs_model = None
+
+        ax.set_xlabel('P-wave travel time  $T_P$ (s)', fontsize=12)
+        ax.set_ylabel('S minus P travel time  $T_S - T_P$ (s)', fontsize=12)
+        ax.set_title('Wadati Diagram\n'
+                     'Observed P/S pairs  |  P-only with model-predicted S  |  Theoretical model curve',
+                     fontsize=11, fontweight='bold', linespacing=1.3)
+
+        stats = (
+            '\u2500 Observed data \u2500\n'
+            f'Paired P/S: {n_pts}\n'
+            f'P-only + model S: {n_ponly}\n'
+            f'$V_P/V_S$ = {vp_vs:.3f}\n'
+            f'RMSE = {rmse:.2f} s\n'
+            f'$R^2$ = {r2:.3f}'
+        )
+        if has_theo:
+            stats += (
+                f'\n\n\u2500 Model: {vel_model} \u2500\n'
+                f'$V_P/V_S$ = {vp_vs_model:.3f}'
+            )
+
+        ax.text(0.97, 0.97, stats, transform=ax.transAxes,
+                fontsize=10, verticalalignment='top',
+                horizontalalignment='right',
+                bbox=dict(boxstyle='round,pad=0.6',
+                          facecolor='#FFF8E1', edgecolor='#E0C060', alpha=0.9))
+
+        ax.set_xlim(left=0)
+        ax.set_ylim(bottom=0)
+        ax.grid(True, alpha=0.25, linestyle=':')
+        ax.legend(loc='lower right', fontsize=10)
+
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=dpi, bbox_inches='tight',
+                    facecolor='white', edgecolor='none', pad_inches=0.3)
+        plt.close(fig)
+        seiscomp.logging.info("Wadati diagram saved to %s" % output_path)
+        print(f"Wadati diagram saved to {output_path}")
+        seiscomp.logging.info(
+            "Vp/Vs = %.3f  (slope=%.3f, intercept=%.2f s, R²=%.3f, n=%d)"
+            % (vp_vs, slope, intercept, r2, n_pts))
+        if has_theo:
+            seiscomp.logging.info(
+                "Model %s: Vp/Vs = %.3f" % (vel_model, vp_vs_model))
+
     def _draw_stations(self, ax, proj):
         all_stations = {}
 
         for se in self.events:
             if se.latitude is None:
                 continue
-            for phase, dist, az in se.arrivals:
+            for phase, dist, az, *_ in se.arrivals:
                 if dist is not None and az is not None:
                     slat, slon = _az_dist_to_latlon(
                         se.latitude, se.longitude, az, dist)
@@ -1674,7 +1924,7 @@ class ScmapApp(seiscomp.client.Application):
             self.commandline().addGroup("Display")
             self.commandline().addStringOption(
                 "Display", "mode",
-                "Map mode: events (default), bvalue, mc, or rate."
+                "Map mode: events (default), bvalue, mc, rate, or wadati."
             )
             self.commandline().addStringOption(
                 "Display", "grid-size",
@@ -1693,6 +1943,11 @@ class ScmapApp(seiscomp.client.Application):
                 "Display", "rate-period",
                 "Rate normalisation period in days (default: 0 = auto). "
                 "Set to 7 for weekly rate, 1 for daily, etc."
+            )
+            self.commandline().addStringOption(
+                "Display", "velocity-model",
+                "SeisComP travel-time table profile for theoretical Wadati "
+                "diagram (e.g. iasp91, tab). Only used with --mode wadati."
             )
             self.commandline().addOption(
                 "Display", "no-legend",
@@ -1811,7 +2066,8 @@ Analysis modes (--mode):
   events          Individual event markers (default)
   bvalue          Gutenberg-Richter b-value heatmap
   mc              Magnitude of completeness heatmap (MAXC)
-  rate            Annual seismicity rate per km²""")
+            rate            Annual seismicity rate per km²
+  wadati          Wadati diagram for Vp/Vs estimation""")
         print()
 
         seiscomp.client.Application.printUsage(self)
@@ -1940,6 +2196,7 @@ Examples:
             'grid_radius': self._opt_float("grid-radius", 50) or 50,
             'mc_hint': self._opt_float("mc-hint", 1.5) or 1.5,
             'rate_period': int(self._opt_float("rate-period", 0) or 0),
+            'velocity_model': self._opt_str("velocity-model"),
             'use_osm': self._has_flag("osm"),
         }
 

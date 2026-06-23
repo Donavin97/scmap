@@ -400,6 +400,10 @@ catalogue time span in years.  Nodes with fewer than 5 events are blank.
 3. Run `python3 scmap.py --help` to verify CLI integrity.
 4. Test with both XML file input and database input where possible.
 
+## Author
+
+**Donavin Liebgott** — [donavinliebgott@gmail.com](mailto:donavinliebgott@gmail.com)
+
 ## License
 
 This project is provided as‑is.  SeisComP is distributed under the
