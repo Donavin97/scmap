@@ -958,6 +958,7 @@ class MapBuilder:
         self._draw_title(ax)
         seiscomp.logging.debug("  timestamp   : drawing ...")
         self._draw_timestamp(fig)
+        self._draw_license_badge(fig)
 
         if config.get('show_inset', True):
             seiscomp.logging.debug("  inset map   : drawing ...")
@@ -1983,6 +1984,17 @@ class MapBuilder:
         fig.text(0.995, 0.004, 'Generated %s  \u00b7  scmap'
                  % ts,
                  fontsize=5.5, color='#999999', ha='right', va='bottom',
+                 style='italic', fontfamily='monospace')
+
+    def _draw_license_badge(self, fig):
+        if not _LICENSED:
+            return
+        name = customer_name()
+        if not name:
+            return
+        seiscomp.logging.debug("  badge       : Licensed to %s" % name)
+        fig.text(0.005, 0.004, 'Licensed to %s' % name,
+                 fontsize=5.5, color='#999999', ha='left', va='bottom',
                  style='italic', fontfamily='monospace')
 
     def _draw_inset(self, fig, lon_min, lon_max, lat_min, lat_max):
