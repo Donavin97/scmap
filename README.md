@@ -162,7 +162,7 @@ LAT=50 LON=8 MARGIN=6 DB="sysop:sysop@10.202.50.1:18002/seiscomp" ./scmap-all.sh
 ```
 
 Output files: `map_events.png`, `map_bvalue.png`, `map_mc.png`,
-`map_rate.png`, `map_wadati.png`.
+`map_rate.png`.
 
 ### Example gallery — South Africa, 10–18 Jun 2026
 

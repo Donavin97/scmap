@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# scmap-all — generate all five map modes for a region in one pass.
+# scmap-all — generate all four map modes for a region in one pass.
 #
 # Usage:
 #   ./scmap-all.sh "2026-06-10" "2026-06-18"             # explicit start/end
@@ -12,7 +12,7 @@ set -euo pipefail
 #   ./scmap-all.sh --osm "2026-06-10" "2026-06-18"         # OSM tiles, date range
 #
 # Customise the region and database below, or override via environment:
-#   LAT=-29 LON=25 MARGIN=8 USE_OSM=1 VELOCITY_MODEL=iasp91 DB="sysop:sysop@host:port/db" ./scmap-all.sh -d 7
+#   LAT=-29 LON=25 MARGIN=8 USE_OSM=1 DB="sysop:sysop@host:port/db" ./scmap-all.sh -d 7
 
 # ── defaults (edit these) ───────────────────────────────────────────────
 LAT="${LAT:--29}"
@@ -25,7 +25,6 @@ GRID_SIZE="${GRID_SIZE:-1.5}"
 GRID_RADIUS="${GRID_RADIUS:-300}"
 MC_HINT="${MC_HINT:-0.5}"
 RATE_PERIOD="${RATE_PERIOD:-0}"
-VELOCITY_MODEL="${VELOCITY_MODEL:-}"
 USE_OSM="${USE_OSM:-}"
 
 # ── parse flags ─────────────────────────────────────────────────────────
@@ -71,7 +70,7 @@ echo "  output   : $OUTDIR"
 echo "======================================================"
 
 # ── event map ───────────────────────────────────────────────────────────
-echo "[1/5] event map ..."
+echo "[1/4] event map ..."
 python3 "$(dirname "$0")/scmap.py" \
     -d "$DB" \
     $OSM_FLAG \
@@ -82,7 +81,7 @@ python3 "$(dirname "$0")/scmap.py" \
     --title "Seismicity  $LABEL"
 
 # ── b‑value ────────────────────────────────────────────────────────────
-echo "[2/5] b‑value map ..."
+echo "[2/4] b‑value map ..."
 python3 "$(dirname "$0")/scmap.py" \
     -d "$DB" \
     $OSM_FLAG \
@@ -95,7 +94,7 @@ python3 "$(dirname "$0")/scmap.py" \
     --title "b‑value  $LABEL"
 
 # ── magnitude of completeness ───────────────────────────────────────────
-echo "[3/5] Mc map ..."
+echo "[3/4] Mc map ..."
 python3 "$(dirname "$0")/scmap.py" \
     -d "$DB" \
     $OSM_FLAG \
@@ -107,7 +106,7 @@ python3 "$(dirname "$0")/scmap.py" \
     --title "Magnitude of Completeness  $LABEL"
 
 # ── rate ────────────────────────────────────────────────────────────────
-echo "[4/5] rate map ..."
+echo "[4/4] rate map ..."
 python3 "$(dirname "$0")/scmap.py" \
     -d "$DB" \
     $OSM_FLAG \
@@ -120,20 +119,6 @@ python3 "$(dirname "$0")/scmap.py" \
     -o "$OUTDIR/map_rate.png" \
     --title "Seismicity Rate  $LABEL"
 
-# ── wadati ───────────────────────────────────────────────────────────────
-VEL_FLAG=""
-if [ -n "$VELOCITY_MODEL" ]; then
-    VEL_FLAG="--velocity-model $VELOCITY_MODEL"
-fi
-echo "[5/5] Wadati diagram ..."
-python3 "$(dirname "$0")/scmap.py" \
-    -d "$DB" \
-    --start-time "$START_TIME" --end-time "$END_TIME" \
-    --lat "$LAT" --lon "$LON" -m "$MARGIN" \
-    $VEL_FLAG \
-    --mode wadati \
-    -o "$OUTDIR/map_wadati.png"
-
 echo ""
 echo "=== done ==="
-ls -lh "$OUTDIR"/map_{events,bvalue,mc,rate,wadati}.png
+ls -lh "$OUTDIR"/map_{events,bvalue,mc,rate}.png
