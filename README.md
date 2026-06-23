@@ -162,14 +162,17 @@ LAT=50 LON=8 MARGIN=6 DB="sysop:sysop@10.202.50.1:18002/seiscomp" ./scmap-all.sh
 ```
 
 Output files: `map_events.png`, `map_bvalue.png`, `map_mc.png`,
-`map_rate.png`.
+`map_rate.png`, `map_wadati.png`.
 
 ### Example gallery — South Africa, 10–18 Jun 2026
 
-Generated with:
+The four map modes are generated with:
 ```
 ./scmap-all.sh "2026-06-10" "2026-06-18"
 ```
+
+The Wadati diagram below uses a 7‑day window with automatic extent and the
+`iasp91_scanloc` velocity model (see [Wadati diagram](#wadati-diagram-1)).
 
 #### Event map
 Depth‑coloured event markers with magnitude‑proportional sizing, station
@@ -196,6 +199,15 @@ Weekly event rate (events / km² / week) for M ≥ 0.5, normalised t
 Bright = high activity, dark = low.  Cells with fewer than 5 events are blank.
 
 ![Rate map](map_rate.png)
+
+#### Wadati diagram
+S‑P vs P travel times for stations with both phases, coloured by event.
+Linear least‑squares fit gives Vp/Vs = 1.75 (slope = Vp/Vs − 1) with R² =
+0.95.  The optional `--velocity-model` flag overlays theoretical travel‑time
+curves from SeisComP LOCSAT tables; P‑only stations with model‑predicted S
+times appear as orange squares.
+
+![Wadati diagram](map_wadati.png)
 
 ### Input options
 
