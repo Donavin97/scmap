@@ -959,6 +959,7 @@ class MapBuilder:
         seiscomp.logging.debug("  timestamp   : drawing ...")
         self._draw_timestamp(fig)
         self._draw_license_badge(fig)
+        self._draw_logo(fig)
 
         if config.get('show_inset', True):
             seiscomp.logging.debug("  inset map   : drawing ...")
@@ -966,9 +967,12 @@ class MapBuilder:
 
         self._check_watermark(fig)
 
-        seiscomp.logging.debug("  render      : saving to %s ..." % output_path)
-        fig.savefig(output_path, dpi=dpi,
-                    facecolor='white', edgecolor='none', pad_inches=0.2)
+        fmt = config.get('format') or os.path.splitext(output_path)[1].lstrip('.') or 'png'
+        sf_args = dict(dpi=dpi, facecolor='white', edgecolor='none', pad_inches=0.2)
+        if fmt in ('pdf', 'svg', 'eps'):
+            sf_args['format'] = fmt
+        seiscomp.logging.debug("  render      : saving to %s (format=%s) ..." % (output_path, fmt))
+        fig.savefig(output_path, **sf_args)
         plt.close(fig)
         seiscomp.logging.info("Map saved to %s" % output_path)
         print(f"Map saved to {output_path}")
@@ -1940,8 +1944,9 @@ class MapBuilder:
         else:
             title = 'Seismic Event Map'
 
+        tcol = cfg.get('brand_color') or '#111111'
         ax.set_title(title, fontsize=14, fontweight='bold',
-                     pad=8, loc='left', color='#111111')
+                     pad=8, loc='left', color=tcol)
 
         subtitle_lines = []
 
@@ -1996,6 +2001,24 @@ class MapBuilder:
         fig.text(0.005, 0.004, 'Licensed to %s' % name,
                  fontsize=5.5, color='#999999', ha='left', va='bottom',
                  style='italic', fontfamily='monospace')
+
+    def _draw_logo(self, fig):
+        path = self.config.get('logo')
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            from matplotlib.image import imread
+            logo = imread(path)
+            # Place in bottom-right corner above timestamp
+            ax = fig.axes[0] if fig.axes else None
+            if ax is None:
+                return
+            ax.figure.figimage(logo,  # use figure coordinates
+                               xo=fig.bbox.x1 - logo.shape[1] - 10,
+                               yo=10, alpha=0.9, zorder=100)
+            seiscomp.logging.debug("  logo        : %s" % path)
+        except Exception as e:
+            seiscomp.logging.warning("Failed to load logo %s: %s" % (path, e))
 
     def _draw_inset(self, fig, lon_min, lon_max, lat_min, lat_max):
         inset_ax = fig.add_axes([0.76, 0.76, 0.18, 0.18],
@@ -2225,6 +2248,27 @@ class ScmapApp(seiscomp.client.Application):
                 "Use OpenTopoMap raster tiles (topographic with contours). "
                 "Alternative to --osm, faster server, better for seismology."
             )
+            if _LICENSED:
+                self.commandline().addStringOption(
+                    "Map", "format",
+                    "Output format: png (default, from extension), pdf, svg, eps."
+                )
+                self.commandline().addStringOption(
+                    "Map", "template",
+                    "Load configuration from a JSON template file."
+                )
+                self.commandline().addStringOption(
+                    "Map", "save-template",
+                    "Save effective configuration to a JSON template file."
+                )
+                self.commandline().addStringOption(
+                    "Map", "logo",
+                    "Path to a PNG logo to place on the map."
+                )
+                self.commandline().addStringOption(
+                    "Map", "brand-color",
+                    "Accent colour for title and legend (hex, e.g. #003366)."
+                )
 
             self.commandline().addGroup("Display")
             self.commandline().addStringOption(
@@ -2367,6 +2411,13 @@ class ScmapApp(seiscomp.client.Application):
         return True
 
     def printUsage(self):
+        if _LICENSED:
+            name = customer_name()
+            tag = "Pro — Licensed to %s" % name if name else "Pro"
+        else:
+            tag = "Community"
+        print("scmap %s" % tag)
+        print()
         print("""Usage:
   scmap [options]
 
@@ -2492,6 +2543,7 @@ Examples:
                 builder.build(sub_output)
         else:
             builder.build(output)
+        self._save_template(config)
         return True
 
     # ── helpers ─────────────────────────────────────────────────────────
@@ -2569,7 +2621,56 @@ Examples:
         if lon:
             config['lon'] = lon
 
+        fmt = self._opt_str("format")
+        if fmt:
+            config['format'] = fmt.lower()
+
+        tmpl = self._opt_str("template")
+        if tmpl:
+            self._load_template(tmpl, config)
+
+        logo = self._opt_str("logo")
+        if logo:
+            config['logo'] = logo
+
+        bc = self._opt_str("brand-color")
+        if bc:
+            config['brand_color'] = bc
+
         return config
+
+    def _save_template(self, config):
+        path = self._opt_str("save-template")
+        if not path:
+            return
+        import json
+        safe = {k: v for k, v in config.items()
+                if isinstance(v, (str, int, float, bool, type(None)))}
+        for k in ('dimension',):
+            if k in config:
+                v = config[k]
+                if isinstance(v, tuple):
+                    safe[k] = '%dx%d' % v
+        try:
+            with open(path, 'w') as f:
+                json.dump(safe, f, indent=2)
+            seiscomp.logging.info("Template saved to %s" % path)
+        except Exception as e:
+            seiscomp.logging.error("Failed to save template: %s" % e)
+
+    @staticmethod
+    def _load_template(path, config):
+        import json
+        try:
+            with open(path) as f:
+                tmpl = json.load(f)
+        except Exception as e:
+            seiscomp.logging.error("Failed to load template %s: %s" % (path, e))
+            return
+        for k, v in tmpl.items():
+            if k not in config or config[k] is None:
+                config[k] = v
+        seiscomp.logging.info("Loaded template from %s" % path)
 
     def _load_xml(self, path):
         ar = seiscomp.io.XMLArchive()
