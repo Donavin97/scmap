@@ -2109,6 +2109,13 @@ Examples:
   Seismicity rate map for the last 7 days:
     scmap --start-time "2026-06-10" -d sysop:sysop@localhost:18002/seiscomp \\
       --mode rate --grid-size 0.3 --grid-radius 60 -o rate_map.png
+
+  Wadati diagram for a single event:
+    scmap -E SEC2026mhzy -d localhost --mode wadati -o wadati.png
+
+  Wadati diagram with velocity-model overlay:
+    scmap -E SEC2026mhzy -d localhost --mode wadati \\
+      --velocity-model iasp91_scanloc -o wadati.png
 """)
         return True
 

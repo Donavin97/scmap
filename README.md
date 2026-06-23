@@ -13,12 +13,16 @@ and a clean Tufte-inspired low-data‑ink basemap.
 
 - **Three input modes** — SCML XML files (`-i`), database by event ID
   (`-E`), or database by time range (`--start-time` / `--end-time`)
-- **Four map modes** — event markers (depth‑coloured, magnitude‑scaled),
+- **Five map modes** — event markers (depth‑coloured, magnitude‑scaled),
   Gutenberg‑Richter b‑value heatmap, magnitude‑of‑completeness (MAXC),
-  and annual seismicity rate
+  annual seismicity rate, and **Wadati diagram** for Vp/Vs estimation
 - **Focal mechanisms** — beach‑ball rendering for events with moment tensor
   or nodal‑plane data (requires [ObsPy](https://obspy.org/))
 - **Station locations** — derived from arrival azimuth/distance
+- **Wadati diagram** — `--mode wadati` plots S–P vs P travel times with
+  least‑squares Vp/Vs fit; optional `--velocity-model` overlays theoretical
+  curves from SeisComP LOCSAT tables and adds model‑predicted S points for
+  P‑only stations
 - **City labels** — loaded from the SeisComP `cities.xml`, with
   density‑aware collision avoidance and population filtering
 - **Professional layout** — scale bar, north arrow, graticule, inset
@@ -101,6 +105,13 @@ scmap -i events.xml --debug
 
 # Use OpenStreetMap raster tiles as the base map
 scmap -i events.xml --osm -o map.png
+
+# Wadati diagram for a single event from the database
+scmap -E SEC2026mhzy -d localhost --mode wadati -o wadati.png
+
+# Wadati diagram with theoretical overlay from a LOCSAT velocity model
+scmap -E SEC2026mhzy -d localhost --mode wadati --velocity-model iasp91_scanloc \
+  -o wadati.png
 ```
 
 ### Batch script (`scmap-all.sh`)
@@ -190,11 +201,12 @@ Bright = high activity, dark = low.  Cells with fewer than 5 events are blank.
 ### Map modes (`--mode`)
 
 | Mode | Description |
-|---|---|
+|---|---|---|
 | `events` *(default)* | Individual event markers with depth colouring and magnitude‑proportional size |
 | `bvalue` | Gutenberg‑Richter **b‑value** via Aki‑Utsu maximum‑likelihood estimator: `b = log₁₀(e) / (M̄ − Mc)`, where Mc is set by `--mc-hint` |
 | `mc` | **Magnitude of completeness** via maximum curvature (MAXC) |
 | `rate` | **Annual seismicity rate** (events / km² / year) above Mc set by `--mc-hint` |
+| `wadati` | **Wadati diagram** — plots S‑P vs P travel times for stations with both phases.  A linear least‑squares fit gives Vp/Vs = slope + 1.  When `--velocity-model` is set, theoretical travel times from the model are overlaid and P‑only stations contribute model‑predicted S‑P points (orange squares) |
 
 All analysis modes use a grid with configurable `--grid-size` (degrees) and
 `--grid-radius` (km).  Each grid node samples events within the radius and
@@ -208,6 +220,7 @@ requires a minimum count before computing a value.
 | `--grid-radius` | 50 | Sample radius in kilometres |
 | `--mc-hint` | 1.5 | Lower magnitude cutoff for b‑value and rate |
 | `--rate-period` | 0 | Rate normalisation in days (0 = auto annual).  Set to 7 for weekly, 1 for daily |
+| `--velocity-model` | — | SeisComP LOCSAT travel‑time table profile (e.g. `iasp91`, `iasp91_scanloc`, `tab`).  Overlays theoretical travel‑time curves on the Wadati diagram and derives model‑predicted S‑P values for stations with only a P pick.  Only used with `--mode wadati` |
 
 ### Map layout
 
@@ -392,6 +405,31 @@ $$\text{rate} = \frac{N}{\pi r^2 \cdot \Delta t}$$
 
 where $N$ is the event count within radius $r$, and $\Delta t$ is the
 catalogue time span in years.  Nodes with fewer than 5 events are blank.
+
+### Wadati diagram
+
+For each origin, arrivals are grouped by phase code (via `Phase.code()` — P‑type
+starting with `P`, S‑type starting with `S`).  A P arrival is paired with the
+S arrival from the same station by minimising the distance difference
+(tolerance ≤ 0.5°) and checking azimuth consistency (≤ 10°).  The P travel time
+is derived from the pick time minus origin time (not from `arrival.time()`,
+which is often unset in the database).
+
+For each pair the point $(T_P, T_S - T_P)$ is plotted.  A linear
+least‑squares fit
+
+$$T_S - T_P = \alpha \cdot T_P + \beta$$
+
+gives the Vp/Vs ratio as $\alpha + 1$.  RMSE and $R^2$ are displayed in the
+info box.
+
+When `--velocity-model` is given:
+- **Theoretical curve** — the LOCSAT travel‑time table computes P and S
+  travel times at each paired station's distance.  These are plotted as a
+  green scatter with a separate Vp/Vs line.
+- **P‑only stations** — stations with only a P pick receive a
+  model‑predicted S travel time, plotted as orange squares.  This fills the
+  diagram with additional data without requiring S picks.
 
 ## Contributing
 
